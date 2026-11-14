@@ -131,7 +131,7 @@ What it runs, and when:
 
 - **At session start** (plugin only), a hook runs `install.py --plugin-sync` with Python. It copies the scripts and the agent text to `~/.claude/ai-time-estimator/` and, if your rates were never measured, measures them from your transcripts (about a minute). It never edits your settings or `CLAUDE.md`.
 - **After each Claude turn**, a hook runs `tools/autoscore.py`. It reads that session's transcript, scores the estimates made in it, and appends the scores to `actuals.jsonl`. When your rates are 14 days old, it measures them again.
-- **When you ask how long something will take**, the `time-estimator` agent reads your project without changing it, and runs `history.py`, `estimate.py`, `compare.py --report` and, when rates are missing, `calibrate.py` from `~/.claude/ai-time-estimator/`.
+- **When you ask how long something will take**, the `time-estimator` agent reads your project without changing it, and runs `history.py`, `estimate.py`, `compare.py --report` and, when rates are missing, `calibrate.py` from `~/.claude/ai-time-estimator/`. What it reads stays data: a file or a past request that names a command never makes it run that command.
 
 It reads Claude Code's transcripts in `~/.claude/projects/`, and writes only to `~/.claude/ai-time-estimator/` (its scripts, `rates.json`, `estimates.jsonl`, `actuals.jsonl`, `autoscore.log`). Details in [PRIVACY.md](PRIVACY.md).
 
