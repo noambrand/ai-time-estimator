@@ -1,10 +1,77 @@
-# AI Time Estimator for Claude Code
+<p align="center">
+  <img src="assets/banner.svg" width="820" alt="AI Time Estimator for Claude Code: a guess of 2-3 days, struck out in red pencil, next to a measured estimate of about 7 minutes, likely 4 to 16">
+</p>
 
-Ask Claude Code *"how long will this take?"* and get an answer in **AI time**, measured from your own sessions:
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
+  <a href="https://github.com/noambrand/ai-time-estimator/releases/latest"><img src="https://img.shields.io/github/v/release/noambrand/ai-time-estimator?label=version&color=brightgreen" alt="Latest release"></a>
+  <a href="https://github.com/noambrand/ai-time-estimator/actions/workflows/tests.yml"><img src="https://github.com/noambrand/ai-time-estimator/actions/workflows/tests.yml/badge.svg" alt="Tests"></a>
+  <img src="https://img.shields.io/badge/built%20for-Claude%20Code-8A63D2" alt="Built for Claude Code">
+  <img src="https://img.shields.io/badge/python-3.9%2B-3776AB" alt="Python 3.9+">
+  <img src="https://img.shields.io/badge/dependencies-none-brightgreen" alt="No dependencies">
+  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey" alt="Windows, macOS, Linux">
+  <a href="https://github.com/noambrand/ai-time-estimator/stargazers"><img src="https://img.shields.io/github/stars/noambrand/ai-time-estimator?style=flat&color=yellow" alt="GitHub stars"></a>
+</p>
 
-> **About 7 min, likely 4–16 min** (8 of 10 past estimates landed inside their range)
+<h3 align="center">Ask Claude Code how long a task will take, and get an answer in its own working minutes, measured on your machine.</h3>
 
-Claude Code works at its own pace: model turns, tool calls, test runs, fix loops. That pace has little to do with how long the same task would take a person. This add-on learns it from your local Claude Code transcripts, and scores itself after every task.
+<p align="center">
+  Claude estimates like a human developer: "2–3 days" for work it finishes before lunch. This add-on has Claude count the work instead of guessing, times it with rates measured from your own sessions, and checks itself after every task.
+</p>
+
+<p align="center">
+  <img src="assets/demo.svg" width="760" alt="Example session: asked how long CSV export will take, Claude answers about 7 minutes, likely 4 to 16, shows three scenarios, and after the work the estimate is scored automatically: 6.2 minutes, inside the range">
+  <br><sub>Example session (illustrative numbers)</sub>
+</p>
+
+<p align="center">
+  <a href="#quick-start">Quick start</a> &bull;
+  <a href="#how-it-works">How it works</a> &bull;
+  <a href="#how-accurate-is-it">Accuracy</a> &bull;
+  <a href="#privacy">Privacy</a> &bull;
+  <a href="#uninstall">Uninstall</a> &bull;
+  <a href="https://github.com/noambrand/ai-time-estimator/releases">Releases</a>
+</p>
+
+---
+
+## Quick start
+
+**1. Paste this into Claude Code:**
+
+```text
+Install https://github.com/noambrand/ai-time-estimator for me: clone it and run its install.py
+```
+
+Claude clones the repo and runs the installer, using whichever Python your system has.
+
+**2. Start a new Claude Code session and ask:**
+
+```text
+how long will it take to add CSV export to the report page?
+```
+
+That's it. Every later answer is scored and improves on its own; you never run a script yourself.
+
+<details>
+<summary>Prefer the terminal? One line.</summary>
+
+```bash
+git clone https://github.com/noambrand/ai-time-estimator.git && python3 ai-time-estimator/install.py
+```
+
+On Windows use `python` instead of `python3`. No git? Download the [ZIP](https://github.com/noambrand/ai-time-estimator/archive/refs/heads/main.zip), unzip it and run `python install.py` in that folder. Needs Python 3.9+ and nothing else.
+
+</details>
+
+## Why
+
+| Claude on its own | With AI Time Estimator |
+|---|---|
+| "This will take 2–3 days" for work it does in 20 minutes | "About 7 min, likely 4–16 min", in its own working time |
+| A week-long plan that is finished by lunch | Plans in real AI minutes, measured on your machine |
+| A guess from human experience | Claude counts the work; scripts time it with your measured rates |
+| Never learns how wrong it was | Scores every estimate and corrects its ranges after 10 tasks |
 
 ## How it works
 
@@ -19,46 +86,23 @@ Claude Code works at its own pace: model turns, tool calls, test runs, fix loops
 
 The model never makes up minutes. It only counts operations, and the scripts do the arithmetic.
 
-## Requirements
+You can also type `/estimate-here <task>` to estimate inside the current session; Claude then waits for your go.
 
-- Claude Code (CLI, desktop app or IDE extension) on Windows, macOS or Linux / WSL
-- Python 3.9 or newer, standard library only: nothing to `pip install`
-- Some Claude Code history on the machine. The more sessions, the better the rates.
-
-## Install
-
-```bash
-git clone https://github.com/noambrand/ai-time-estimator.git
-cd ai-time-estimator
-python install.py
-```
-
-Use the same Python that Claude Code's shell finds (on Windows: the one Git Bash runs). `install.py`:
+## What the installer changes
 
 - copies the `time-estimator` agent to `~/.claude/agents/`, the `/estimate-here` command to `~/.claude/commands/`, and the scripts to `~/.claude/ai-time-estimator/`;
 - adds one async **Stop hook** to `~/.claude/settings.json` (your previous file is saved as `settings.json.bak`);
 - adds a short, marked "Time estimates" section to `~/.claude/CLAUDE.md`, so Claude uses the estimator whenever you ask how long something will take;
-- measures your rates (about a minute).
+- measures your rates from your existing Claude Code history (about a minute). The rates refresh themselves every 14 days.
 
-Options: `--no-hook` (no automatic scoring), `--no-rule` (leave `~/.claude/CLAUDE.md` alone). Run it again at any time: it updates in place. Start a new Claude Code session afterwards.
-
-## Use
-
-- Ask in plain words: *"how long will it take to add CSV export?"* Claude hands the question to the time-estimator and answers in one line, followed by what drives the range.
-- Or type `/estimate-here <task>` to estimate inside the current session; Claude then waits for your go.
-
-Scoring is automatic, and the rates are refreshed every 14 days. You never need to run a script yourself.
-
-## Privacy
-
-Everything stays on your machine. The estimator reads Claude Code's transcripts in `~/.claude/projects/` and writes only to `~/.claude/ai-time-estimator/` (`rates.json`, `estimates.jsonl`, `actuals.jsonl`, `autoscore.log`). It makes no network calls.
+Options: `--no-hook` (no automatic scoring), `--no-rule` (leave `~/.claude/CLAUDE.md` alone). Running it again updates in place.
 
 ## How accurate is it?
 
 Check it on your own history:
 
 ```bash
-python tools/backtest.py
+python ~/.claude/ai-time-estimator/backtest.py
 ```
 
 The backtest replays your past requests with their real tool calls. It measures rates on the older 80% of your requests and tests on the newest 20%, then reports how often the real time landed inside P10–P90.
@@ -72,19 +116,27 @@ On the author's machine (72 held-out requests):
 
 A single request varies a lot, even when its tool calls are known exactly, so trust the range more than the middle number. The backtest checks the time model only; how well the agent counts the work is what the automatic scoring and the self-correction track.
 
+## Privacy
+
+Everything stays on your machine. The estimator reads Claude Code's transcripts in `~/.claude/projects/` and writes only to `~/.claude/ai-time-estimator/` (`rates.json`, `estimates.jsonl`, `actuals.jsonl`, `autoscore.log`). It makes no network calls.
+
 ## Limitations
 
 - It relies on Claude Code's local transcript format, which is internal and can change. If `calibrate.py` stops recognizing model turns it prints `FORMAT CHECK FAILED`; `tools/cc_log.py` is the only file to adapt.
-- History reaches back as far as Claude Code keeps transcripts (`cleanupPeriodDays`, 30 days by default).
+- History reaches back as far as Claude Code keeps transcripts (`cleanupPeriodDays`, 30 days by default). A fresh install with little history gives wider, rougher ranges at first.
 - A task ends when you send your next message. If Claude asks you something halfway, the score stops at that point.
 - It measures AI time only: approvals, answers and manual checks are not part of the estimate.
 
 ## Uninstall
 
+From the cloned folder:
+
 ```bash
 python install.py --uninstall           # removes the agent, command, scripts, hook and CLAUDE.md section; keeps your history
 python install.py --uninstall --purge   # also deletes ~/.claude/ai-time-estimator
 ```
+
+Or ask Claude Code: *"uninstall the AI time estimator by running its install.py --uninstall"*.
 
 ## Development
 
@@ -94,7 +146,7 @@ python tools/backtest.py --worst 10           # accuracy on your history, with t
 python tools/history.py --everywhere --grep test
 ```
 
-Changes take effect after `python install.py`. [`CLAUDE.md`](CLAUDE.md) explains the architecture, for contributors and for Claude Code.
+Changes take effect after `python install.py`. [`CLAUDE.md`](CLAUDE.md) explains the architecture, for contributors and for Claude Code. Issues and pull requests are welcome.
 
 ## Credits
 
@@ -103,3 +155,5 @@ Transcript parsing follows the approach of [dioptx/cctime](https://github.com/di
 ## License
 
 [MIT](LICENSE) © 2026 Noam Brand
+
+<p align="center"><sub>If it saved you from a wrong plan, a ⭐ helps other Claude Code users find it.</sub></p>

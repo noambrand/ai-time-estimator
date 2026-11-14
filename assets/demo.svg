@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 470" width="1000" height="470" role="img" aria-labelledby="title desc">
+  <title id="title">Example Claude Code session with AI Time Estimator</title>
+  <desc id="desc">The user asks how long adding CSV export will take. Claude answers: about 7 minutes, likely 4 to 16, and shows three scenarios on a minutes scale. After the work, the estimate is scored automatically: it took 6.2 minutes, inside the range.</desc>
+  <rect width="1000" height="470" rx="14" fill="#18232E"/>
+  <rect x="0.75" y="0.75" width="998.5" height="468.5" rx="13.5" fill="none" stroke="#2C3C4C" stroke-width="1.5"/>
+
+  <g font-family="'Cascadia Mono', 'SF Mono', Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="17">
+    <text x="40" y="44" fill="#8193A6" font-size="14">Claude Code, example session</text>
+    <line x1="40" y1="60" x2="960" y2="60" stroke="#2C3C4C" stroke-width="1"/>
+
+    <text x="40" y="98"><tspan fill="#7FB2E5">&gt;</tspan><tspan fill="#E6EDF3"> how long will it take to add CSV export to the report page?</tspan></text>
+    <text x="40" y="136" fill="#8193A6">Asked the time-estimator: it read 6 files and 2 similar past requests.</text>
+
+    <text x="40" y="184" fill="#FFFFFF" font-size="23" font-weight="700">About 7 min, likely 4–16 min</text>
+    <text x="40" y="214" fill="#8193A6">(8 of 10 past estimates landed inside their range)</text>
+
+    <!-- scenarios on one minutes scale: 28 px per minute from x=200 -->
+    <g fill="#C9D4DF">
+      <text x="40" y="262">smooth</text>
+      <text x="40" y="294">expected</text>
+      <text x="40" y="326">rough</text>
+    </g>
+    <g fill="#8193A6" text-anchor="end">
+      <text x="180" y="262">25%</text>
+      <text x="180" y="294">50%</text>
+      <text x="180" y="326">25%</text>
+    </g>
+    <rect x="200" y="250" width="140" height="14" rx="3" fill="#7FB2E5" fill-opacity="0.55"/>
+    <rect x="200" y="282" width="210" height="14" rx="3" fill="#7FB2E5"/>
+    <rect x="200" y="314" width="392" height="14" rx="3" fill="#7FB2E5" fill-opacity="0.55"/>
+    <g fill="#8193A6">
+      <text x="352" y="262">5 min</text>
+      <text x="422" y="294">7.5 min</text>
+      <text x="604" y="326">14 min (new auth flow)</text>
+    </g>
+
+    <line x1="40" y1="356" x2="960" y2="356" stroke="#2C3C4C" stroke-width="1" stroke-dasharray="4 6"/>
+    <text x="40" y="392" fill="#8193A6">... the work is done, 6 minutes later</text>
+    <text x="40" y="426"><tspan fill="#8FD19E">Scored automatically:</tspan><tspan fill="#E6EDF3"> took 6.2 min, inside the range.</tspan></text>
+  </g>
+</svg>

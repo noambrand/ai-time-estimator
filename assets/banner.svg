@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 380" width="1200" height="380" role="img" aria-labelledby="title desc">
+  <title id="title">AI Time Estimator for Claude Code</title>
+  <desc id="desc">A human-style guess of "2-3 days" is struck out in red pencil. Next to it, the measured estimate: a probability curve on a minutes axis, about 7 minutes, likely 4 to 16.</desc>
+  <defs>
+    <pattern id="minor" width="20" height="20" patternUnits="userSpaceOnUse">
+      <path d="M20 0H0V20" fill="none" stroke="#D6DFE7" stroke-width="1"/>
+    </pattern>
+    <pattern id="major" width="100" height="100" patternUnits="userSpaceOnUse">
+      <rect width="100" height="100" fill="url(#minor)"/>
+      <path d="M100 0H0V100" fill="none" stroke="#C3D0DB" stroke-width="1.2"/>
+    </pattern>
+    <clipPath id="frame"><rect width="1200" height="380" rx="18"/></clipPath>
+  </defs>
+
+  <g clip-path="url(#frame)">
+    <rect width="1200" height="380" fill="#EDF1F4"/>
+    <rect width="1200" height="380" fill="url(#major)"/>
+  </g>
+  <rect x="0.75" y="0.75" width="1198.5" height="378.5" rx="17.5" fill="none" stroke="#C3D0DB" stroke-width="1.5"/>
+
+  <g font-family="Bahnschrift, 'DIN Alternate', 'Roboto Condensed', 'Arial Narrow', 'Segoe UI', sans-serif">
+    <!-- left: name and promise -->
+    <text x="64" y="146" font-size="58" font-weight="600" fill="#17324D" letter-spacing="-0.5">AI Time Estimator</text>
+    <text x="66" y="194" font-size="32" fill="#4E6479">for Claude Code</text>
+    <text x="66" y="264" font-size="22" fill="#17324D">Ask how long a task will take.</text>
+    <text x="66" y="296" font-size="22" fill="#17324D">Get minutes measured on your own machine.</text>
+
+    <!-- right: the human guess, corrected in red pencil -->
+    <text x="972" y="88" font-size="40" fill="#9AABBA">2–3 days</text>
+    <path d="M966 75 C 1010 70, 1062 80, 1126 71" fill="none" stroke="#C8312A" stroke-width="4" stroke-linecap="round"/>
+    <path d="M969 83 C 1020 79, 1070 86, 1121 80" fill="none" stroke="#C8312A" stroke-width="2.2" stroke-linecap="round" opacity="0.75"/>
+
+    <!-- likely range (P10..P90) under the measured curve -->
+    <polygon fill="#17324D" fill-opacity="0.13"
+      points="746,290 746,142.7 758,139 770,140.1 782,144.3 794,150.8 818,167.3 842,184.9 866,201.5 890,216.3 914,228.9 938,239.5 962,248.3 986,255.6 1010,261.5 1034,266.4 1034,290"/>
+    <polyline fill="none" stroke="#17324D" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"
+      points="650,290 662,289.6 674,280.9 686,257 698,224.9 710,194 722,169.2 734,152.2 746,142.7 758,139 770,140.1 782,144.3 794,150.8 818,167.3 842,184.9 866,201.5 890,216.3 914,228.9 938,239.5 962,248.3 986,255.6 1010,261.5 1034,266.4 1058,270.4 1082,273.6 1106,276.3 1130,278.6"/>
+
+    <!-- minutes axis -->
+    <line x1="650" y1="290" x2="1134" y2="290" stroke="#17324D" stroke-width="2"/>
+    <g stroke="#17324D" stroke-width="2">
+      <line x1="650" y1="290" x2="650" y2="299"/><line x1="770" y1="290" x2="770" y2="299"/>
+      <line x1="890" y1="290" x2="890" y2="299"/><line x1="1010" y1="290" x2="1010" y2="299"/>
+      <line x1="1130" y1="290" x2="1130" y2="299"/>
+    </g>
+    <g font-size="16" fill="#4E6479" text-anchor="middle">
+      <text x="650" y="318">0</text><text x="770" y="318">5</text><text x="890" y="318">10</text>
+      <text x="1010" y="318">15</text><text x="1130" y="318">20 min</text>
+    </g>
+
+    <!-- the measured answer, marked in red pencil -->
+    <line x1="818" y1="290" x2="818" y2="122" stroke="#C8312A" stroke-width="3" stroke-linecap="round"/>
+    <circle cx="818" cy="167.3" r="6" fill="#EDF1F4" stroke="#C8312A" stroke-width="3"/>
+    <text x="830" y="128" font-size="27" font-weight="600" fill="#C8312A">about 7 min</text>
+
+    <!-- likely range bracket -->
+    <path d="M746 332 V340 H1034 V332" fill="none" stroke="#17324D" stroke-width="1.6"/>
+    <text x="890" y="362" font-size="17" fill="#17324D" text-anchor="middle">likely 4–16 min</text>
+  </g>
+</svg>
