@@ -9,16 +9,22 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { os: ubuntu-latest, python: "3.9" }
-          - { os: ubuntu-latest, python: "3.13" }
-          - { os: macos-latest, python: "3.13" }
-          - { os: windows-latest, python: "3.13" }
+        os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python }}
+          python-version: "3.13"
       - name: Run the test suite (stdlib only, no dependencies)
+        run: python -m unittest discover -s tests -v
+
+  # The oldest supported Python. Runner images drop end-of-life versions, so this one runs in the
+  # official Docker image instead.
+  oldest-python:
+    runs-on: ubuntu-latest
+    container: python:3.9-slim
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run the test suite on Python 3.9
         run: python -m unittest discover -s tests -v
