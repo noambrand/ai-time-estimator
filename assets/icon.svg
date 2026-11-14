@@ -6,15 +6,11 @@
   </defs>
   <rect width="512" height="512" fill="#EDF1F4"/>
   <rect width="512" height="512" fill="url(#grid)"/>
-  <!-- likely range under the curve -->
   <polygon fill="#17324D" fill-opacity="0.16"
     points="150,392 150,170 170,160 190,163 210,174 250,206 290,240 330,270 370,293 370,392"/>
-  <!-- the measured curve -->
   <polyline fill="none" stroke="#17324D" stroke-width="16" stroke-linejoin="round" stroke-linecap="round"
     points="70,392 90,380 110,320 130,230 150,170 170,160 190,163 210,174 250,206 290,240 330,270 370,293 410,310 446,322"/>
-  <!-- minutes axis -->
   <line x1="62" y1="392" x2="452" y2="392" stroke="#17324D" stroke-width="14" stroke-linecap="round"/>
-  <!-- the middle estimate, in red pencil -->
   <line x1="230" y1="392" x2="230" y2="96" stroke="#C8312A" stroke-width="16" stroke-linecap="round"/>
   <circle cx="230" cy="190" r="17" fill="#EDF1F4" stroke="#C8312A" stroke-width="12"/>
 </svg>

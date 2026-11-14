@@ -108,4 +108,4 @@ when it says so), rounded to whole minutes (seconds under 2 min), with its `Trac
 4. P10 / P50 / P90, the scenario medians and the breakdown line, exactly as `estimate.py` printed them.
 5. Corrections you made from past bias (Step 0), if any.
 6. Unmeasured inputs and human-only steps (not included in the time).
-7. The estimate id. Scoring happens automatically after the work (Stop hook), so never tell the user to run a script.
+7. The estimate id. Scoring happens automatically after the work (Stop hook), so the user has nothing to run.

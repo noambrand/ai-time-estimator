@@ -15,14 +15,12 @@
   <rect width="1280" height="640" fill="url(#major)"/>
 
   <g font-family="Bahnschrift, 'DIN Alternate', 'Roboto Condensed', 'Arial Narrow', 'Segoe UI', sans-serif">
-    <!-- left: name and promise -->
     <text x="72" y="250" font-size="64" font-weight="600" fill="#17324D" letter-spacing="-0.5">AI Time Estimator</text>
     <text x="75" y="304" font-size="34" fill="#4E6479">for Claude Code</text>
     <text x="75" y="394" font-size="26" fill="#17324D">Ask how long a task will take.</text>
     <text x="75" y="432" font-size="26" fill="#17324D">Get minutes measured on your own machine.</text>
     <text x="75" y="560" font-size="22" fill="#4E6479">Free and open source. One-command install.</text>
 
-    <!-- right: the banner's chart, scaled -->
     <g transform="translate(-35 90) scale(1.1)">
       <text x="972" y="88" font-size="40" fill="#9AABBA">2–3 days</text>
       <path d="M966 75 C 1010 70, 1062 80, 1126 71" fill="none" stroke="#C8312A" stroke-width="4" stroke-linecap="round"/>
