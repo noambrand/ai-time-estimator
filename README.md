@@ -120,7 +120,7 @@ A single request varies a lot, even when its tool calls are known exactly, so tr
 
 ## Privacy
 
-Everything stays on your machine. The estimator reads Claude Code's transcripts in `~/.claude/projects/` and writes only to `~/.claude/ai-time-estimator/` (`rates.json`, `estimates.jsonl`, `actuals.jsonl`, `autoscore.log`). It makes no network calls.
+Everything stays on your machine. The estimator reads Claude Code's transcripts in `~/.claude/projects/` and writes only to `~/.claude/ai-time-estimator/` (`rates.json`, `estimates.jsonl`, `actuals.jsonl`, `autoscore.log`). It makes no network calls. Details in [PRIVACY.md](PRIVACY.md).
 
 ## Limitations
 

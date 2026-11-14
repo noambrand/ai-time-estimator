@@ -10,5 +10,9 @@
   "homepage": "https://github.com/noambrand/ai-time-estimator",
   "repository": "https://github.com/noambrand/ai-time-estimator",
   "license": "MIT",
+  "icon": "./.claude-plugin/icon.png",
+  "documentationUrl": "https://github.com/noambrand/ai-time-estimator#readme",
+  "supportUrl": "https://github.com/noambrand/ai-time-estimator/issues",
+  "privacyPolicyUrl": "https://github.com/noambrand/ai-time-estimator/blob/main/PRIVACY.md",
   "keywords": ["estimation", "time-estimation", "planning", "productivity", "forecasting", "monte-carlo", "hooks", "subagent"]
 }
