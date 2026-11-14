@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/install.py\" --plugin-sync 2>/dev/null || python \"${CLAUDE_PLUGIN_ROOT}/install.py\" --plugin-sync",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/install.py\" --plugin-sync || python \"${CLAUDE_PLUGIN_ROOT}/install.py\" --plugin-sync",
             "timeout": 300,
             "async": true
           }
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/tools/autoscore.py\" 2>/dev/null || python \"${CLAUDE_PLUGIN_ROOT}/tools/autoscore.py\"",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/tools/autoscore.py\" || python \"${CLAUDE_PLUGIN_ROOT}/tools/autoscore.py\"",
             "timeout": 120,
             "async": true
           }

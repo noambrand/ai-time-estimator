@@ -1,6 +1,8 @@
-<p align="center">
-  <img src="assets/banner.svg" width="820" alt="AI Time Estimator for Claude Code: a guess of 2-3 days, struck out in red pencil, next to a measured estimate of about 7 minutes, likely 4 to 16">
-</p>
+<div align="center">
+
+![AI Time Estimator for Claude Code: a guess of 2-3 days, struck out in red pencil, next to a measured estimate of about 7 minutes, likely 4 to 16](assets/banner.svg)
+
+</div>
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
@@ -19,10 +21,13 @@
   Claude estimates like a human developer: "2–3 days" for work it finishes before lunch. This add-on has Claude count the work instead of guessing, times it with rates measured from your own sessions, and checks itself after every task.
 </p>
 
-<p align="center">
-  <img src="assets/demo.svg" width="760" alt="Example session: asked how long CSV export will take, Claude answers about 7 minutes, likely 4 to 16, shows three scenarios, and after the work the estimate is scored automatically: 6.2 minutes, inside the range">
-  <br><sub>Example session (illustrative numbers)</sub>
-</p>
+<div align="center">
+
+![Example session: asked how long CSV export will take, Claude answers about 7 minutes, likely 4 to 16, shows three scenarios, and after the work the estimate is scored automatically: 6.2 minutes, inside the range](assets/demo.svg)
+
+<sub>Example session (illustrative numbers)</sub>
+
+</div>
 
 <p align="center">
   <a href="#quick-start">Quick start</a> &bull;
@@ -120,7 +125,15 @@ A single request varies a lot, even when its tool calls are known exactly, so tr
 
 ## Privacy
 
-Everything stays on your machine. The estimator reads Claude Code's transcripts in `~/.claude/projects/` and writes only to `~/.claude/ai-time-estimator/` (`rates.json`, `estimates.jsonl`, `actuals.jsonl`, `autoscore.log`). It makes no network calls. Details in [PRIVACY.md](PRIVACY.md).
+Everything stays on your machine. It makes no network calls and sends nothing anywhere.
+
+What it runs, and when:
+
+- **At session start** (plugin only), a hook runs `install.py --plugin-sync` with Python. It copies the scripts and the agent text to `~/.claude/ai-time-estimator/` and, if your rates were never measured, measures them from your transcripts (about a minute). It never edits your settings or `CLAUDE.md`.
+- **After each Claude turn**, a hook runs `tools/autoscore.py`. It reads that session's transcript, scores the estimates made in it, and appends the scores to `actuals.jsonl`. When your rates are 14 days old, it measures them again.
+- **When you ask how long something will take**, the `time-estimator` agent reads your project without changing it, and runs `history.py`, `estimate.py`, `compare.py --report` and, when rates are missing, `calibrate.py` from `~/.claude/ai-time-estimator/`.
+
+It reads Claude Code's transcripts in `~/.claude/projects/`, and writes only to `~/.claude/ai-time-estimator/` (its scripts, `rates.json`, `estimates.jsonl`, `actuals.jsonl`, `autoscore.log`). Details in [PRIVACY.md](PRIVACY.md).
 
 ## Limitations
 

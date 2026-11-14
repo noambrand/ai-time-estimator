@@ -35,6 +35,16 @@ class PluginFiles(unittest.TestCase):
                     for rel in set(re.findall(r'\$\{CLAUDE_PLUGIN_ROOT\}/([\w./-]+)', hook["command"])):
                         self.assertTrue((ROOT / rel).is_file(), rel)
 
+    def test_hook_commands_follow_the_directory_rules(self):
+        # Anthropic's directory blocks a hook command with any variable but ${CLAUDE_PLUGIN_ROOT}, a
+        # command substitution, a wildcard or an inline program, and wants every path written from
+        # ${CLAUDE_PLUGIN_ROOT} (so no /dev/null either).
+        for event in load("hooks/hooks.json")["hooks"].values():
+            for group in event:
+                for hook in group["hooks"]:
+                    bare = hook["command"].replace("${CLAUDE_PLUGIN_ROOT}", "ROOT")
+                    self.assertNotRegex(bare, r"\$|`|[*?]|\s-c\s|(?<!\w)/", hook["command"])
+
     def test_agent_and_command_live_where_the_plugin_loads_them(self):
         self.assertTrue((ROOT / "agents" / "time-estimator.md").is_file())
         command = (ROOT / "commands" / "estimate-here.md").read_text(encoding="utf-8")
