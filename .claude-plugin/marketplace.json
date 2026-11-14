@@ -1,0 +1,17 @@
+{
+  "name": "ai-time-estimator",
+  "owner": {
+    "name": "Noam Brand",
+    "url": "https://github.com/noambrand"
+  },
+  "description": "AI Time Estimator: answers how long a Claude Code task will take, in AI minutes measured on your own machine.",
+  "plugins": [
+    {
+      "name": "ai-time-estimator",
+      "source": "./",
+      "description": "Ask Claude Code how long a task will take and get an answer in its own working minutes, measured from your local transcripts. Every estimate is scored after the work, and the ranges correct themselves.",
+      "category": "productivity",
+      "tags": ["estimation", "planning", "productivity", "hooks", "subagent"]
+    }
+  ]
+}

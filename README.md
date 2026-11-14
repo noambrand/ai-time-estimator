@@ -37,13 +37,11 @@
 
 ## Quick start
 
-**1. Paste this into Claude Code:**
+**1. In Claude Code, run:**
 
 ```text
-Install https://github.com/noambrand/ai-time-estimator for me: clone it and run its install.py
+/plugin install ai-time-estimator --marketplace noambrand/ai-time-estimator
 ```
-
-Claude clones the repo and runs the installer, using whichever Python your system has.
 
 **2. Start a new Claude Code session and ask:**
 
@@ -51,16 +49,16 @@ Claude clones the repo and runs the installer, using whichever Python your syste
 how long will it take to add CSV export to the report page?
 ```
 
-That's it. Every later answer is scored and improves on its own; you never run a script yourself.
+That's it. The first session measures your rates in the background (about a minute), and every later answer is scored and improves on its own. You never run a script yourself. Needs Python 3.9+ on your PATH; nothing to `pip install`.
 
 <details>
-<summary>Prefer the terminal? One line.</summary>
+<summary>Older Claude Code, or prefer another way?</summary>
 
-```bash
-git clone https://github.com/noambrand/ai-time-estimator.git && python3 ai-time-estimator/install.py
-```
+- **Claude Code before 2.1.275:** run `/plugin marketplace add noambrand/ai-time-estimator`, then `/plugin install ai-time-estimator@ai-time-estimator`.
+- **Let Claude do it:** paste *"Install https://github.com/noambrand/ai-time-estimator for me: clone it and run its install.py"* into Claude Code.
+- **Terminal, one line:** `git clone https://github.com/noambrand/ai-time-estimator.git && python3 ai-time-estimator/install.py` (on Windows `python`). No git? Download the [ZIP](https://github.com/noambrand/ai-time-estimator/archive/refs/heads/main.zip) and run `python install.py` in its folder.
 
-On Windows use `python` instead of `python3`. No git? Download the [ZIP](https://github.com/noambrand/ai-time-estimator/archive/refs/heads/main.zip), unzip it and run `python install.py` in that folder. Needs Python 3.9+ and nothing else.
+Pick one way. The plugin and `install.py` do the same job, so having both would score every task twice.
 
 </details>
 
@@ -88,7 +86,11 @@ The model never makes up minutes. It only counts operations, and the scripts do 
 
 You can also type `/estimate-here <task>` to estimate inside the current session; Claude then waits for your go.
 
-## What the installer changes
+## What installing changes
+
+**As a plugin**, nothing in your own settings: Claude Code loads the agent, the `/estimate-here` command and the two hooks (scoring after each turn, a sync at session start) from the plugin. Your rates and history live in `~/.claude/ai-time-estimator/`.
+
+**With `install.py`**, it:
 
 - copies the `time-estimator` agent to `~/.claude/agents/`, the `/estimate-here` command to `~/.claude/commands/`, and the scripts to `~/.claude/ai-time-estimator/`;
 - adds one async **Stop hook** to `~/.claude/settings.json` (your previous file is saved as `settings.json.bak`);
@@ -129,7 +131,9 @@ Everything stays on your machine. The estimator reads Claude Code's transcripts 
 
 ## Uninstall
 
-From the cloned folder:
+Plugin: run `/plugin uninstall ai-time-estimator`. Your estimate history stays in `~/.claude/ai-time-estimator/`; delete that folder too if you want it gone.
+
+`install.py`, from the cloned folder:
 
 ```bash
 python install.py --uninstall           # removes the agent, command, scripts, hook and CLAUDE.md section; keeps your history
@@ -146,7 +150,7 @@ python tools/backtest.py --worst 10           # accuracy on your history, with t
 python tools/history.py --everywhere --grep test
 ```
 
-Changes take effect after `python install.py`. [`CLAUDE.md`](CLAUDE.md) explains the architecture, for contributors and for Claude Code. Issues and pull requests are welcome.
+Changes take effect after `python install.py`. [`.claude/CLAUDE.md`](.claude/CLAUDE.md) explains the architecture, for contributors and for Claude Code. Issues and pull requests are welcome.
 
 ## Credits
 

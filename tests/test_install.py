@@ -64,6 +64,20 @@ class Installer(IsolatedTest):
             self.install.add_rule()
         self.assertTrue(self.md.read_text(encoding="utf-8").startswith(self.install.RULE_START))
 
+    def test_plugin_sync_keeps_the_data_folder_current_and_leaves_settings_alone(self):
+        before = (self.settings.read_text(encoding="utf-8"), self.md.read_text(encoding="utf-8"))
+        with mock.patch.object(self.install.subprocess, "run") as calibrate:
+            self.install.main(["--plugin-sync"])
+            self.assertEqual(calibrate.call_count, 1)                       # no rates yet: measure once
+            (self.install.data / "rates.json").write_text("{}", encoding="utf-8")
+            self.install.main(["--plugin-sync"])
+            self.assertEqual(calibrate.call_count, 1)                       # rates exist: no recalibration
+        self.assertTrue((self.install.data / "autoscore.py").exists())
+        self.assertTrue((self.install.data / "time-estimator.md").exists())  # what /estimate-here reads
+        self.assertEqual(self.install.sync_data_dir(), 0)                   # nothing changed since
+        self.assertEqual((self.settings.read_text(encoding="utf-8"), self.md.read_text(encoding="utf-8")), before)
+        self.assertFalse((self.install.claude / "agents").exists())         # Claude Code loads it from the plugin
+
     def test_hook_command_runs_in_bash_and_powershell(self):
         # forward-slash paths read the same on every OS (a backslash is no separator on Linux/macOS)
         with mock.patch.object(self.install.sys, "executable", "/opt/python/bin/python3"):

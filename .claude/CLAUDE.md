@@ -8,10 +8,12 @@ A Claude Code add-on that estimates how long a Claude Code worker will take on a
 
 ## Source vs installed copy
 
-This folder is the source. `python install.py` copies:
+This folder is the source, and also a **Claude Code plugin and its own marketplace** (`.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json` with `"source": "./"`, `hooks/hooks.json`, the default `agents/` and `commands/` folders, `.claude-plugin/icon.png`). Users install it with `/plugin install ai-time-estimator --marketplace noambrand/ai-time-estimator`. In plugin mode Claude Code loads the agent, the command and the hooks itself; the SessionStart hook runs `install.py --plugin-sync`, which copies `tools/*.py` and the agent text into `~/.claude/ai-time-estimator/` (where the agent and `/estimate-here` call them by fixed path) and calibrates once. Check plugin changes with `claude plugin validate .` (this file sits in `.claude/` because a `CLAUDE.md` at a plugin root is a validation warning).
+
+The other way in, `python install.py`, copies:
 - `agents/time-estimator.md` → `~/.claude/agents/` (subagent, runs on sonnet)
-- `commands/estimate-here.md` → `~/.claude/commands/` (`/estimate-here`: the same procedure, run in the current session)
-- `tools/*.py` → `~/.claude/ai-time-estimator/`, then runs `calibrate.py` once
+- `commands/estimate-here.md` → `~/.claude/commands/` (`/estimate-here`: the same procedure, run in the current session; it reads the agent text from `~/.claude/ai-time-estimator/time-estimator.md`, so it works in both modes)
+- `tools/*.py` and the agent text → `~/.claude/ai-time-estimator/`, then runs `calibrate.py` once
 - registers `autoscore.py` as an async **Stop hook** in `~/.claude/settings.json` (backup `settings.json.bak`; matched by the script name, so re-running updates instead of duplicating)
 - adds a marked `<!-- ai-time-estimator:start/end -->` "Time estimates" rule to `~/.claude/CLAUDE.md` (replaced in place on re-run)
 - `--no-hook` / `--no-rule` skip those two edits; `--uninstall` removes everything it added (`--purge` also deletes the data folder). `tests/test_install.py` checks that an install followed by an uninstall gives back the user's files unchanged.

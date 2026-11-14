@@ -1,0 +1,14 @@
+{
+  "name": "ai-time-estimator",
+  "displayName": "AI Time Estimator",
+  "version": "1.1.0",
+  "description": "Ask Claude Code how long a task will take and get an answer in its own working minutes, measured from your local transcripts. Every estimate is scored after the work, and the ranges correct themselves.",
+  "author": {
+    "name": "Noam Brand",
+    "url": "https://github.com/noambrand"
+  },
+  "homepage": "https://github.com/noambrand/ai-time-estimator",
+  "repository": "https://github.com/noambrand/ai-time-estimator",
+  "license": "MIT",
+  "keywords": ["estimation", "time-estimation", "planning", "productivity", "forecasting", "monte-carlo", "hooks", "subagent"]
+}

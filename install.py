@@ -1,4 +1,4 @@
-# [UPDATED v1.3] install.py - copy the time estimator into ~/.claude, register the automatic-scoring
+# [UPDATED v1.4] install.py - copy the time estimator into ~/.claude, register the automatic-scoring
 # Stop hook, add the "how to answer a time question" rule to ~/.claude/CLAUDE.md, and calibrate.
 # Run it with the same Python environment Claude Code runs in (Windows or WSL). Safe to run again.
 # Usage: python install.py [--no-hook] [--no-rule]      python install.py --uninstall [--purge]
@@ -29,14 +29,36 @@ RULE = f"""{RULE_START}
 RULE_BLOCK = re.compile(r"\n*" + re.escape(RULE_START) + r".*?" + re.escape(RULE_END) + r"\n?", re.DOTALL)
 
 
+def sync_data_dir() -> int:
+    """Put the scripts, and the agent text that /estimate-here reads, into the data folder.
+    Returns how many files changed."""
+    data.mkdir(parents=True, exist_ok=True)
+    changed = 0
+    for source in [*sorted((src / "tools").glob("*.py")), src / AGENT]:
+        target = data / source.name
+        if not target.exists() or target.read_bytes() != source.read_bytes():
+            shutil.copy2(source, target)
+            changed += 1
+    return changed
+
+
 def copy_files() -> None:
-    for folder in (claude / "agents", claude / "commands", data):
+    for folder in (claude / "agents", claude / "commands"):
         folder.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src / AGENT, claude / AGENT)
     shutil.copy2(src / COMMAND, claude / COMMAND)
-    for script in (src / "tools").glob("*.py"):
-        shutil.copy2(script, data / script.name)
+    sync_data_dir()
     print(f"Installed agent, /estimate-here and scripts -> {data}")
+
+
+def plugin_sync() -> None:
+    """Plugin mode (the plugin's SessionStart hook): Claude Code provides the agent, the command and the
+    hooks itself, so only keep the data folder current and measure the rates once. Never touches
+    settings.json or CLAUDE.md."""
+    sync_data_dir()
+    if not (data / "rates.json").exists():
+        subprocess.run([sys.executable, str(data / "calibrate.py")], check=False,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def hook_command() -> str:
@@ -129,8 +151,9 @@ def remove_files(purge: bool) -> None:
         shutil.rmtree(data, ignore_errors=True)
         print(f"Removed agent, /estimate-here and {data} (scripts and all estimate data)")
         return
-    for script in data.glob("*.py"):
-        script.unlink()
+    for script in [*data.glob("*.py"), data / AGENT.name]:
+        if script.exists():
+            script.unlink()
     shutil.rmtree(data / "__pycache__", ignore_errors=True)
     print(f"Removed agent, /estimate-here and scripts. Your estimate data stays in {data} (--purge deletes it).")
 
@@ -141,7 +164,11 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--no-rule", action="store_true", help="do not add the time-estimate rule to ~/.claude/CLAUDE.md")
     parser.add_argument("--uninstall", action="store_true", help="remove everything install.py added")
     parser.add_argument("--purge", action="store_true", help="with --uninstall: also delete rates and estimate history")
+    parser.add_argument("--plugin-sync", action="store_true", help=argparse.SUPPRESS)  # the plugin's SessionStart hook
     args = parser.parse_args(argv)
+    if args.plugin_sync:
+        plugin_sync()
+        return
     if args.uninstall:
         remove_hook()
         remove_rule()

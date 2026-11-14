@@ -1,0 +1,28 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/install.py\" --plugin-sync 2>/dev/null || python \"${CLAUDE_PLUGIN_ROOT}/install.py\" --plugin-sync",
+            "timeout": 300,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/tools/autoscore.py\" 2>/dev/null || python \"${CLAUDE_PLUGIN_ROOT}/tools/autoscore.py\"",
+            "timeout": 120,
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
+}
