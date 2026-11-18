@@ -114,13 +114,21 @@ def turn_sampler(model_rates: dict, bucket_tokens: int):
     return sample, usable
 
 
-def command_samples(rates: dict, project: str, command: str, fallback: float) -> tuple[list[float], str]:
+def command_samples(rates: dict, project: str, command: str, fallback: float | None) -> tuple[list[float], str]:
+    """Measured run times of this command. Never measured: the caller's fallback_seconds, else the measured runs
+    of all read-only (or all other) commands, else FALLBACK_COMMAND_SECONDS."""
     for key in cc_log.command_keys(command):
         for scope in (project, "*"):
             found = rates["commands"].get(scope, {}).get(key)
             if found:
                 return found, ("this project" if scope == project else "other projects") + f": '{key}' n={len(found)}"
-    return [float(fallback)], "UNMEASURED (fallback_seconds)"
+    if fallback is not None:
+        return [float(fallback)], "UNMEASURED (fallback_seconds)"
+    kind = "quick" if cc_log.is_quick_command(command) else "other"
+    pool = rates.get("command_pools", {}).get(kind)
+    if pool:
+        return pool, f"UNMEASURED: drawn from {len(pool)} measured {'read-only' if kind == 'quick' else 'other'} commands"
+    return [float(FALLBACK_COMMAND_SECONDS)], f"UNMEASURED (default {FALLBACK_COMMAND_SECONDS} s)"
 
 
 def tool_samples(rates: dict, name: str, fallback: float) -> tuple[list[float], str]:
@@ -156,7 +164,7 @@ def simulate(counts: dict, rates: dict, mr: dict, project: str, n: int = SIMULAT
     cmd_names = set(declared_cmds) | {k for s in scenarios for k in s.get("runs", {})}
     cmd_samples = {}
     for cmd in sorted(cmd_names):
-        fallback = declared_cmds.get(cmd, {}).get("fallback_seconds", FALLBACK_COMMAND_SECONDS)
+        fallback = declared_cmds.get(cmd, {}).get("fallback_seconds")
         cmd_samples[cmd], source = command_samples(rates, project, cmd, fallback)
         notes.append(f"command '{cmd}': {source}")
     verify = next((cmd for cmd, c in declared_cmds.items() if c.get("verify")), None)

@@ -22,9 +22,13 @@ SEARCH_TOOLS = {"Grep", "Glob", "LS"}
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 QUICK_TOOLS = READ_TOOLS | SEARCH_TOOLS | EDIT_TOOLS
 BOOKKEEPING_TOOLS = {"TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "TodoWrite", "ToolSearch"}  # no project work
+# Claude Code's own coordination tools: messages, agent lists, stopping a task, loading a skill. They return at
+# once, yet about a quarter of their logged calls took minutes (a queued call, a slow hook), not work.
+COORDINATION_TOOLS = {"SendMessage", "ListAgents", "TaskStop", "TaskOutput", "KillShell", "BashOutput", "Skill",
+                      "SubagentHandback", "EnterWorktree", "ExitWorktree", "CronCreate", "CronList", "CronDelete"}
 # Tools that take well under a second: a longer gap means they waited (approval, a blocked teammate, a
-# stall), so their samples are capped at QUICK_TOOL_MAX_SECONDS.
-INSTANT_TOOLS = QUICK_TOOLS | BOOKKEEPING_TOOLS
+# stall), so their samples are capped at QUICK_TOOL_MAX_SECONDS and compare.py counts the gap as a wait.
+INSTANT_TOOLS = QUICK_TOOLS | BOOKKEEPING_TOOLS | COORDINATION_TOOLS
 TOOL_ALIASES = {"Task": "Agent", "Agent": "Task"}  # the subagent tool was renamed between versions
 RESULT_TEXT_CHARS = 3000     # tail of each tool result kept, to spot failures a pipe hid from the exit code
 
@@ -50,7 +54,7 @@ FAILURE_MARKERS = re.compile(
 # longer than QUICK_TOOL_MAX_SECONDS waited (an approval, a queued call, a slow hook), like a slow Read does.
 QUICK_COMMAND_WORDS = {"ls", "dir", "cat", "head", "tail", "wc", "grep", "egrep", "fgrep", "rg", "sed", "awk", "cut",
                        "sort", "uniq", "tr", "nl", "column", "file", "stat", "find", "echo", "printf", "pwd", "which",
-                       "type", "basename", "dirname", "realpath", "readlink", "date", "diff", "cmp", "test", "true"}
+                       "type", "basename", "dirname", "realpath", "readlink", "date", "diff", "cmp", "test", "[", "true"}
 QUICK_GIT_SUBCOMMANDS = {"status", "log", "diff", "show", "branch", "rev-parse", "ls-files", "ls-tree", "blame",
                          "remote", "tag", "describe", "shortlog", "cat-file", "config", "reflog", "merge-base", "grep"}
 QUOTED = re.compile(r'"(?:\\.|[^"\\])*"|\'[^\']*\'')
@@ -158,11 +162,22 @@ def command_keys(command: str) -> list[str]:
 
 
 def is_quick_command(command: str) -> bool:
-    """True when every step of a shell command is a read-only utility (ls, grep, sed -n, git status/log/diff...)."""
+    """True when every step of a shell command is a read-only utility (ls, grep, sed -n, git status/log/diff...).
+    Loop and if keywords are skipped; a command substitution may hide any work, so it is never quick."""
     text = QUOTED.sub('""', HEREDOC.sub("", command or ""))
+    if "$(" in (command or "") or "`" in (command or ""):
+        return False
     steps = [s.strip() for s in re.split(r"&&|\|\|?|;|\n", text) if s.strip()]
-    steps = [s for s in steps if not re.match(r"(?i)(cd|pushd|popd|set|export|source)\b", s)]
+    steps = [re.sub(r"^(?:(?:do|then|else|if|while|until|!|\{|\()\s+)+", "", s) for s in steps]
+    steps = [s for s in steps if not re.match(r"(?i)(cd|pushd|popd|set|export|source|for|done|fi|esac|\}|\))(\s|$)", s)]
     return bool(steps) and all(quick_step(s) for s in steps)
+
+
+def is_instant(tool: dict) -> bool:
+    """A call that returns at once (Read, Edit, task list, messages, a read-only shell command): when it took
+    QUICK_TOOL_MAX_SECONDS or more, it waited."""
+    name = tool.get("name", "")
+    return name in INSTANT_TOOLS or (name == "Bash" and is_quick_command(str(tool.get("input", {}).get("command", ""))))
 
 
 def quick_step(step: str) -> bool:

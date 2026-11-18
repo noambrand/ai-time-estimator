@@ -139,8 +139,7 @@ def measure(events: list[dict], side: list[list[dict]], est_ts: float, until: fl
                 counts["write_lines"] += cc_log.written_lines(tool) if tool["name"] in cc_log.EDIT_TOOLS else 0
                 if tracker.on_call(tool) is not None:
                     counts["fix_loops"] += 1
-                if tool["name"] in cc_log.HUMAN_TOOLS or tool["name"] in cc_log.QUICK_TOOLS or (
-                        tool["name"] == "Bash" and cc_log.is_quick_command(command)):
+                if tool["name"] in cc_log.HUMAN_TOOLS or (tool["id"] not in bg_ids and cc_log.is_instant(tool)):
                     asked[tool["id"]] = (tool["name"], tool["ts"])
             idle = not ev["tools"] and not running
         elif ev["kind"] == "result":
@@ -148,8 +147,8 @@ def measure(events: list[dict], side: list[list[dict]], est_ts: float, until: fl
                 running.discard(res["id"])
                 tracker.on_result(res["id"], res["error"], res.get("text", ""))
                 name, called = asked.pop(res["id"], ("", 0.0))
-                # The user answering a question, or approving a quick tool (Read/Edit/ls/grep taking 30+ s, or
-                # marked as answered at a permission prompt), is a human wait, not AI time.
+                # The user answering a question, or an instant call (Read/Edit/ls/grep/SendMessage...) taking 30+ s
+                # or marked as answered at a permission prompt, is a human wait, not AI time.
                 if name in cc_log.HUMAN_TOOLS or (name and (res.get("prompted")
                                                             or ev["ts"] - called > cc_log.QUICK_TOOL_MAX_SECONDS)):
                     human_s += max(0.0, ev["ts"] - prev)

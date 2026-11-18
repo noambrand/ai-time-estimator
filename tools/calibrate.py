@@ -15,6 +15,7 @@ BUCKET_TOKENS = 25_000   # context-size bucket width for turn latency
 MAX_SAMPLES = 400        # samples kept per bucket / command (keeps rates.json small)
 MIN_MODEL_TURNS = 20
 MIN_SESSION_CALLS = 10   # a main session needs this many tool calls to give a seconds-per-call rate
+MIN_POOL_SAMPLES = 20    # shell runs needed before unmeasured commands draw from the measured pool
 
 
 def median_or_none(values: list[float], min_n: int = 1) -> float | None:
@@ -35,6 +36,9 @@ class Accumulator:
         self.commands: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
         self.loops: list[int] = []
         self.launches: list[float] = []          # seconds the session spent starting background work
+        # Every accepted shell run, split into read-only quick commands and the rest: estimate.py draws an
+        # unmeasured command's time from these instead of one flat guess.
+        self.command_pools: dict[str, list[float]] = defaultdict(list)
         self.turns_seen = 0
         self.turns_with_usage = 0
 
@@ -127,7 +131,7 @@ class Accumulator:
         """Store one tool duration; returns the seconds accepted (0 when filtered out). A call whose
         permission prompt a person answered, or that was denied and never ran, is no run time."""
         name, _, inp = item[:3]
-        quick = name in cc_log.INSTANT_TOOLS or (name == "Bash" and cc_log.is_quick_command(inp.get("command", "")))
+        quick = cc_log.is_instant({"name": name, "input": inp})
         limit = cc_log.QUICK_TOOL_MAX_SECONDS if quick else cc_log.LONG_TOOL_MAX_SECONDS
         if dur < 0 or dur > limit or name in cc_log.HUMAN_TOOLS or (res and (res.get("prompted") or res.get("denied"))):
             return 0.0
@@ -135,6 +139,7 @@ class Accumulator:
             for key in cc_log.command_keys(inp.get("command", "")):
                 self.commands[project][key].append(dur)
                 self.commands["*"][key].append(dur)
+            self.command_pools["quick" if quick else "other"].append(dur)
         else:
             self.tools[name].append(dur)  # every tool keeps its own times: Task/Agent, WebFetch, MCP...
         return dur
@@ -181,6 +186,8 @@ class Accumulator:
                          for p, cmds in self.commands.items()},
             "fix_loop_calls": {"n": len(self.loops), "median": median_or_none(self.loops, 5)},
             "background_launch_seconds": median_or_none(self.launches, 3),
+            "command_pools": {k: keep_sample(v, rng) for k, v in sorted(self.command_pools.items())
+                              if len(v) >= MIN_POOL_SAMPLES},
         }
 
 

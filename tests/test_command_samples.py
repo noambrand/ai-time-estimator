@@ -5,10 +5,11 @@ from __future__ import annotations
 
 import unittest
 
-from fixtures import IsolatedTest, Transcript
+from fixtures import MODEL, IsolatedTest, Transcript, make_rates
 import calibrate
 import cc_log
 import compare
+import estimate
 
 ASKED = {"permissionDecision": {"decision": "accept", "source": "user_temporary", "grantScope": "once"}}
 RULE = {"permissionDecision": {"decision": "accept", "source": "config", "reasonType": "rule"}}
@@ -27,6 +28,19 @@ class QuickCommands(unittest.TestCase):
         for command in ("python run.py", "npm test", "git commit -m x", "git push", "grep x f && python run.py",
                         "make all", "cat > f.py <<'EOF'\nimport os\nEOF\npython f.py", "", "cd sub"):
             self.assertFalse(cc_log.is_quick_command(command), command)
+
+    def test_loops_and_ifs_around_read_only_steps_are_quick(self):
+        for command in ('for d in a b; do ls "$d"; done', "if [ -f x ]; then cat x; fi",
+                        "date +%H; for k in x y; do git -C $k log -1; done"):
+            self.assertTrue(cc_log.is_quick_command(command), command)
+        for command in ("for f in *.py; do python $f; done", "X=$(python run.py)", "echo `make`"):
+            self.assertFalse(cc_log.is_quick_command(command), command)
+
+    def test_coordination_tools_are_instant(self):
+        for name in ("SendMessage", "ListAgents", "TaskStop", "Skill", "Read", "TaskUpdate"):
+            self.assertTrue(cc_log.is_instant({"name": name, "input": {}}), name)
+        for name in ("Agent", "WebFetch", "Workflow", "mcp__x__y"):
+            self.assertFalse(cc_log.is_instant({"name": name, "input": {}}), name)
 
 
 class Samples(IsolatedTest):
@@ -64,6 +78,22 @@ class Samples(IsolatedTest):
         self.assertEqual(acc.commands["*"]["python build.py"], [45.0])
         self.assertNotIn("Read", acc.tools)
 
+    def test_slow_message_to_a_teammate_is_a_wait_not_a_sample(self):
+        tr = Transcript(1_000_000.0)
+        for gap in (1.0, 3.0, 200.0):
+            send = tr.tool("SendMessage", to="worker", message="status?")
+            tr.turn(send, dur=2)
+            tr.result(send, gap=gap)
+        self.assertEqual(sorted(self.accumulate(tr).tools["SendMessage"]), [1.0, 3.0])
+
+    def test_shell_runs_are_pooled_as_quick_or_other(self):
+        tr = Transcript(1_000_000.0)
+        for i in range(calibrate.MIN_POOL_SAMPLES):
+            self.run_command(tr, f"ls dir{i}", 0.5)
+            self.run_command(tr, f"python job{i}.py", 12.0)
+        pools = self.accumulate(tr).finish()["command_pools"]
+        self.assertEqual((set(pools["quick"]), set(pools["other"])), ({0.5}, {12.0}))
+
     def test_result_events_carry_the_permission_flags(self):
         tr = Transcript(1_000_000.0)
         self.run_command(tr, "python a.py", 1.0, **ASKED)
@@ -72,6 +102,30 @@ class Samples(IsolatedTest):
         events = cc_log.load_streams(tr.write(self.projects / "p" / "s.jsonl"))["main"]["events"]
         flags = [(r["prompted"], r["denied"]) for e in events if e["kind"] == "result" for r in e["results"]]
         self.assertEqual(flags, [(True, False), (False, True), (False, False)])
+
+
+class UnmeasuredCommands(unittest.TestCase):
+    def rates(self) -> dict:
+        rates = make_rates()
+        rates["command_pools"] = {"quick": [0.5] * 20, "other": [6.0] * 20}
+        return rates
+
+    def test_unmeasured_command_draws_from_the_measured_pool(self):
+        samples, source = estimate.command_samples(self.rates(), "c:/x", "python new_tool.py", None)
+        self.assertEqual((set(samples), "drawn from 20 measured other commands" in source), ({6.0}, True))
+        samples, _ = estimate.command_samples(self.rates(), "c:/x", "wc -l new_file.txt", None)
+        self.assertEqual(set(samples), {0.5})
+        res = estimate.simulate({"commands": [{"cmd": "python new_tool.py"}],
+                                 "scenarios": [{"runs": {"python new_tool.py": 1}}]},
+                                self.rates(), self.rates()["models"][MODEL], "c:/x")
+        self.assertAlmostEqual(res["p50"] * 60, 2 * 10 + 6)            # was 2 turns + a flat 30 s
+
+    def test_callers_fallback_and_measured_keys_still_win(self):
+        self.assertEqual(estimate.command_samples(self.rates(), "c:/x", "make all", 7)[0], [7.0])
+        self.assertEqual(estimate.command_samples(self.rates(), "c:/x", "python run.py -v", 7)[0], [30.0] * 3)
+
+    def test_without_pools_the_flat_default_stays(self):
+        self.assertEqual(estimate.command_samples(make_rates(), "c:/x", "make all", None)[0], [30.0])
 
 
 class ActiveTime(IsolatedTest):
