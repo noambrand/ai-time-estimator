@@ -29,6 +29,7 @@ FALLBACK_LAUNCH_SECONDS = 1.0    # starting background work, until the logs hold
 MIN_SCORED = 10                  # scored estimates needed before shown ranges correct themselves
 RECENT_SCORED = 20               # the correction learns from the newest scored estimates only
 TARGET_INSIDE = 0.8              # share of real times a P10-P90 range should hold
+SPREAD_ON_COMMANDS = True        # scale measured shell-command samples too: the backtest holds 84% inside P10-P90 with it, 67% without
 
 
 def measured(value, fallback):
@@ -139,6 +140,12 @@ def tool_samples(rates: dict, name: str, fallback: float) -> tuple[list[float], 
     return [float(fallback)], "UNMEASURED (fallback_seconds)"
 
 
+def fixed_seconds(command: dict):
+    """The known duration of a declared command (fixed_seconds, or remaining_seconds for a job already running)."""
+    value = command.get("fixed_seconds", command.get("remaining_seconds"))
+    return None if value is None else float(value)
+
+
 def speed_factor(rng: random.Random, spread: dict, minutes: float) -> float:
     """A real/predicted factor of a past request of about this predicted size (see backtest.speed_factors)."""
     for band in spread["bands"]:
@@ -163,7 +170,14 @@ def simulate(counts: dict, rates: dict, mr: dict, project: str, n: int = SIMULAT
     bg_names = {k for s in scenarios for k in s.get("background", {})}
     cmd_names = set(declared_cmds) | {k for s in scenarios for k in s.get("runs", {})}
     cmd_samples = {}
+    # A known wait (a timed sleep, the time left on a job already running) is a constant: never sampled, never
+    # scaled by the speed spread, so P10 cannot fall below it.
+    fixed = {cmd: float(fixed_seconds(c)) for cmd, c in declared_cmds.items() if fixed_seconds(c) is not None}
     for cmd in sorted(cmd_names):
+        if cmd in fixed:
+            cmd_samples[cmd] = [fixed[cmd]]
+            notes.append(f"command '{cmd}': KNOWN WAIT {fixed[cmd]:.0f} s per run (a floor, not scaled)")
+            continue
         fallback = declared_cmds.get(cmd, {}).get("fallback_seconds")
         cmd_samples[cmd], source = command_samples(rates, project, cmd, fallback)
         notes.append(f"command '{cmd}': {source}")
@@ -212,18 +226,23 @@ def simulate(counts: dict, rates: dict, mr: dict, project: str, n: int = SIMULAT
                   + d["fix_loops"] * loop_calls * t_edit
                   + sum(rng.choice(other_samples[k]) for k, n in tools.items() for _ in range(n))
                   + sum(bg.values()) * launch_s)
-        cmd_s = sum(rng.choice(cmd_samples[k]) for k, n in runs.items() for _ in range(n))
-        if verify:
+        cmd_s = sum(rng.choice(cmd_samples[k]) for k, n in runs.items() if k not in fixed for _ in range(n))
+        fixed_s = sum(fixed[k] * n for k, n in runs.items() if k in fixed)
+        if verify in fixed:
+            fixed_s += fixed[verify] * d["fix_loops"]
+        elif verify:
             cmd_s += sum(rng.choice(cmd_samples[verify]) for _ in range(d["fix_loops"]))
         write_s = max(0.0, write_tokens - d["edits"] * typical_out) / tps if tps else 0.0
         raw = model_s + tool_s + cmd_s + write_s
-        # One measured speed factor per run: real requests are fast or slow as a whole.
-        factor = speed_factor(rng, spread, raw / 60) if spread else 1.0
-        total = raw * factor
+        # One measured speed factor per run: real requests are fast or slow as a whole. Known waits come after it.
+        factor = speed_factor(rng, spread, raw / 60) if spread else 1.0     # band by the part it scales
+        scaled = raw if SPREAD_ON_COMMANDS else raw - cmd_s
+        total = scaled * factor + (raw - scaled) + fixed_s
         # Background jobs run side by side: the last result comes when the longest one ends.
         bg_s = max((rng.choice(bg_samples[k]) for k, n in bg.items() for _ in range(n)), default=0.0)
         sims.append({"total": total, "wall": max(total, bg_s), "model": model_s, "tools": tool_s,
-                     "commands": cmd_s, "writes": write_s, "turns": turns, "scenario": si})
+                     "commands": cmd_s + fixed_s, "writes": write_s, "turns": turns, "scenario": si,
+                     "fixed": fixed_s})
 
     def percentiles(key: str) -> dict:
         values = sorted(r[key] for r in sims)
@@ -231,6 +250,7 @@ def simulate(counts: dict, rates: dict, mr: dict, project: str, n: int = SIMULAT
 
     pct = percentiles("total")
     wall = percentiles("wall") if bg_names else None
+    floor = min(r["fixed"] for r in sims) / 60
     med = {k: statistics.median(r[k] for r in sims) for k in ("model", "tools", "commands", "writes", "turns")}
     by_scenario = []
     for i, s in enumerate(scenarios):
@@ -252,7 +272,8 @@ def simulate(counts: dict, rates: dict, mr: dict, project: str, n: int = SIMULAT
     likely_calls = (exp["reads"] + exp["searches"] + exp["edits"] + exp["other_calls"] + exp["bookkeeping"] + exp["commands"]
                     + exp["fix_loops"] * loop_calls)
     spc = mr.get("seconds_per_call")
-    return {"p10": pct[10], "p50": pct[50], "p90": pct[90], "wall": wall, "median_parts": med, "notes": notes,
+    return {"p10": pct[10], "p50": pct[50], "p90": pct[90], "wall": wall, "floor": floor,
+            "median_parts": med, "notes": notes,
             "by_scenario": by_scenario, "baseline": likely_calls * spc / 60 if spc else None,
             "likely_calls": likely_calls, "seconds_per_call": spc}
 
@@ -339,7 +360,9 @@ def main() -> None:
     res = simulate(counts, rates, mr, project)
     scored = scored_estimates()
     corr = correction(scored)
-    p10, p50, p90 = corrected(res["p10"], res["p50"], res["p90"], corr) if corr else (res["p10"], res["p50"], res["p90"])
+    floor = res["floor"]          # known waits: the self-correction shifts only the part around them
+    p10, p50, p90 = (tuple(floor + p for p in corrected(res["p10"] - floor, res["p50"] - floor, res["p90"] - floor, corr))
+                     if corr else (res["p10"], res["p50"], res["p90"]))
 
     est_id = "E" + time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:3]  # unique even within one second
     record = {"id": est_id, "ts": time.time(), "project": project, "model": model,
