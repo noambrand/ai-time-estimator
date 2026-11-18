@@ -9,7 +9,7 @@ AI Time Estimator runs entirely on your own computer. It collects nothing, sends
 
 ## What it writes
 
-- `~/.claude/ai-time-estimator/`: the scripts, your measured rates (`rates.json`), your estimates (`estimates.jsonl`), their scores (`actuals.jsonl`) and a log (`autoscore.log`). These files contain timings, tool-call counts, task summaries you asked about, and the first line of past requests (shown by `history.py`). They never leave your machine.
+- `~/.claude/ai-time-estimator/`: the scripts, your measured rates (`rates.json`), your estimates (`estimates.jsonl`), their scores (`actuals.jsonl`), the run times of long jobs you record (`jobs.jsonl`) and a log (`autoscore.log`). These files contain timings, tool-call counts, task summaries you asked about, and the first line of past requests (shown by `history.py`). They never leave your machine.
 - With `install.py` only: the agent and command files in `~/.claude/agents/` and `~/.claude/commands/`, the hook entry in `~/.claude/settings.json` (a backup is kept as `settings.json.bak`), and the marked section in `~/.claude/CLAUDE.md`.
 
 ## Removing it

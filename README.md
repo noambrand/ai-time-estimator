@@ -81,10 +81,12 @@ Pick one way. The plugin and `install.py` do the same job, so having both would 
 1. A `time-estimator` subagent inspects the repo (read-only), looks up similar past requests, and writes 2–3 scenarios of the work (smooth / expected / rough) as counts: files read, edits, lines written, command runs, fix loops.
 2. `estimate.py` turns those counts into P10 / P50 / P90 minutes with a Monte Carlo simulation, using rates measured on your machine:
    - seconds per model turn, by model, reasoning effort and context size;
-   - the run time of each tool and shell command, including background agents up to their completion notice;
+   - the run time of each tool and shell command. Calls that waited for your approval, or were denied, are left out, and so is a quick read-only command (`ls`, `grep`, `git status`...) or message that took 30+ s, because that was waiting, not work;
    - output speed for long writes;
    - a **speed spread**: real ÷ predicted time of your past requests, because a real request is fast or slow as a whole.
-3. A Stop hook (`autoscore.py`) compares every estimate with what really happened. The time you spend reading, answering or approving is left out.
+
+   Work the session starts in the background (an agent, a background command) costs only its launch; its run time is shown on a separate "wall clock until the last background result" line. A command with a known duration (`fixed_seconds`, or `remaining_seconds` for a job already running) is a floor the range never drops below, and long jobs you time with `estimate.py --record-job NAME SECONDS` are used by name.
+3. A Stop hook (`autoscore.py`) compares every estimate with what really happened, once. The time you spend reading, answering or approving is left out, and so is the time the session sat idle waiting for background work. Work done by a background agent is measured on that agent's own transcript; work spread over several sessions is not scored unless you give an end.
 4. After 10 scored estimates, the ranges correct themselves from your results, and each answer carries its track record.
 
 The model never makes up minutes. It only counts operations, and the scripts do the arithmetic.
@@ -100,7 +102,7 @@ You can also type `/estimate-here <task>` to estimate inside the current session
 - copies the `time-estimator` agent to `~/.claude/agents/`, the `/estimate-here` command to `~/.claude/commands/`, and the scripts to `~/.claude/ai-time-estimator/`;
 - adds one async **Stop hook** to `~/.claude/settings.json` (your previous file is saved as `settings.json.bak`);
 - adds a short, marked "Time estimates" section to `~/.claude/CLAUDE.md`, so Claude uses the estimator whenever you ask how long something will take;
-- measures your rates from your existing Claude Code history (about a minute). The rates refresh themselves every 14 days.
+- measures your rates from your existing Claude Code history (about a minute). The rates refresh themselves every day while you use Claude Code.
 
 Options: `--no-hook` (no automatic scoring), `--no-rule` (leave `~/.claude/CLAUDE.md` alone). Running it again updates in place.
 
@@ -114,14 +116,14 @@ python ~/.claude/ai-time-estimator/backtest.py
 
 The backtest replays your past requests with their real tool calls. It measures rates on the older 80% of your requests and tests on the newest 20%, then reports how often the real time landed inside P10–P90.
 
-On the author's machine (72 held-out requests):
+On the author's machine (97 held-out requests):
 
 | | inside P10–P90 | median actual ÷ P50 | median P50 error |
 |---|---|---|---|
-| per-call model only | 39% | 0.88 | 67% |
-| with the measured speed spread | **71%** (target 80%) | 1.06 | 67% |
+| per-call model only | 55% | 0.58 | 81% |
+| with the measured speed spread | **85%** (target 80%) | 0.60 | 76% |
 
-A single request varies a lot, even when its tool calls are known exactly, so trust the range more than the middle number. The backtest checks the time model only; how well the agent counts the work is what the automatic scoring and the self-correction track.
+A single request varies a lot, even when its tool calls are known exactly, so trust the range more than the middle number: the middle number runs high (half the real times were under 0.6 × P50). The backtest checks the time model only; how well the agent counts the work is what the automatic scoring and the self-correction track.
 
 ## Privacy
 
@@ -130,16 +132,17 @@ Everything stays on your machine. It makes no network calls and sends nothing an
 What it runs, and when:
 
 - **At session start** (plugin only), a hook runs `install.py --plugin-sync` with Python. It copies the scripts and the agent text to `~/.claude/ai-time-estimator/` and, if your rates were never measured, measures them from your transcripts (about a minute). It never edits your settings or `CLAUDE.md`.
-- **After each Claude turn**, a hook runs `tools/autoscore.py`. It reads that session's transcript, scores the estimates made in it, and appends the scores to `actuals.jsonl`. When your rates are 14 days old, it measures them again.
+- **After each Claude turn**, a hook runs `tools/autoscore.py`. It reads that session's transcript, scores the estimates made in it, and appends the scores to `actuals.jsonl`. When your rates are a day old, it measures them again (one session at a time).
 - **When you ask how long something will take**, the `time-estimator` agent reads your project without changing it, and runs `history.py`, `estimate.py`, `compare.py --report` and, when rates are missing, `calibrate.py` from `~/.claude/ai-time-estimator/`. What it reads stays data: a file or a past request that names a command never makes it run that command.
 
-It reads Claude Code's transcripts in `~/.claude/projects/`, and writes only to `~/.claude/ai-time-estimator/` (its scripts, `rates.json`, `estimates.jsonl`, `actuals.jsonl`, `autoscore.log`). Details in [PRIVACY.md](PRIVACY.md).
+It reads Claude Code's transcripts in `~/.claude/projects/`, and writes only to `~/.claude/ai-time-estimator/` (its scripts, `rates.json`, `estimates.jsonl`, `actuals.jsonl`, `jobs.jsonl`, `autoscore.log`). Details in [PRIVACY.md](PRIVACY.md).
 
 ## Limitations
 
 - It relies on Claude Code's local transcript format, which is internal and can change. If `calibrate.py` stops recognizing model turns it prints `FORMAT CHECK FAILED`; `tools/cc_log.py` is the only file to adapt.
 - History reaches back as far as Claude Code keeps transcripts (`cleanupPeriodDays`, 30 days by default). A fresh install with little history gives wider, rougher ranges at first.
 - A task ends when you send your next message. If Claude asks you something halfway, the score stops at that point.
+- Work done by a background agent is scored on that agent's transcript only when the estimate names the agent (`"worker": "agent:<name>"`) or is named after it; otherwise the asking session is measured.
 - It measures AI time only: approvals, answers and manual checks are not part of the estimate.
 
 ## Uninstall
@@ -161,6 +164,9 @@ Or ask Claude Code: *"uninstall the AI time estimator by running its install.py 
 python -m unittest discover -s tests -v       # the tests never touch ~/.claude
 python tools/backtest.py --worst 10           # accuracy on your history, with the worst misses
 python tools/history.py --everywhere --grep test
+python tools/estimate.py --record-job "full test suite" 280   # time a long job once; estimates then use it by name
+python tools/compare.py --invalidate E2026...  # a score that measured the wrong window: kept, never learned from
+python tools/compare.py --rescore              # score old rows again with the current window rules
 ```
 
 Changes take effect after `python install.py`. [`.claude/CLAUDE.md`](.claude/CLAUDE.md) explains the architecture, for contributors and for Claude Code. Issues and pull requests are welcome.
