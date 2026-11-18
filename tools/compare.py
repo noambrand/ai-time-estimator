@@ -124,15 +124,17 @@ def measure(events: list[dict], side: list[list[dict]], est_ts: float, until: fl
                 counts["write_lines"] += cc_log.written_lines(tool) if tool["name"] in cc_log.EDIT_TOOLS else 0
                 if tracker.on_call(tool) is not None:
                     counts["fix_loops"] += 1
-                if tool["name"] in cc_log.HUMAN_TOOLS or tool["name"] in cc_log.QUICK_TOOLS:
+                if tool["name"] in cc_log.HUMAN_TOOLS or tool["name"] in cc_log.QUICK_TOOLS or (
+                        tool["name"] == "Bash" and cc_log.is_quick_command(str(tool["input"].get("command", "")))):
                     asked[tool["id"]] = (tool["name"], tool["ts"])
         elif ev["kind"] == "result":
             for res in ev["results"]:
                 tracker.on_result(res["id"], res["error"], res.get("text", ""))
                 name, called = asked.pop(res["id"], ("", 0.0))
-                # The user answering a question, or approving a quick tool (Read/Edit taking 30+ s), is a
-                # human wait, not AI time.
-                if name in cc_log.HUMAN_TOOLS or (name and ev["ts"] - called > cc_log.QUICK_TOOL_MAX_SECONDS):
+                # The user answering a question, or approving a quick tool (Read/Edit/ls/grep taking 30+ s, or
+                # marked as answered at a permission prompt), is a human wait, not AI time.
+                if name in cc_log.HUMAN_TOOLS or (name and (res.get("prompted")
+                                                            or ev["ts"] - called > cc_log.QUICK_TOOL_MAX_SECONDS)):
                     human_s += max(0.0, ev["ts"] - prev)
         # "system" events (a background agent finished, a summary...) are neither work nor a human wait:
         # the time up to them stays active time.

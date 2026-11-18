@@ -52,12 +52,12 @@ class Accumulator:
         # Workflow, background Bash...): then its result only says "launched", and the real end is the later
         # completion notice that names its tool_use_id, or - for a named agent - its first message back
         # ("teammate_id" = the name it was launched with). So results wait here until the stream ends.
-        finished: dict[str, tuple[tuple, float]] = {}
+        finished: dict[str, tuple[tuple, float, dict]] = {}
         named: dict[str, str] = {}               # agent name -> tool_use_id of its latest launch
 
-        def record(item: tuple, dur: float) -> None:
+        def record(item: tuple, dur: float, res: dict) -> None:
             tool_s = session[item[3]]["tool_max"]
-            tool_s[item[4]] = max(tool_s[item[4]], self.add_tool_time(project, item, dur))
+            tool_s[item[4]] = max(tool_s[item[4]], self.add_tool_time(project, item, dur, res))
 
         for ev in events:
             if ev["kind"] == "turn":
@@ -97,24 +97,26 @@ class Accumulator:
                     tracker.on_result(res["id"], res["error"], res.get("text", ""))
                     item = pending.pop(res["id"], None)
                     if item:
-                        finished[res["id"]] = (item, ev["ts"] - item[1])
+                        finished[res["id"]] = (item, ev["ts"] - item[1], res)
             elif ev["kind"] == "system":
                 tool_id = ev.get("tool_use_id") or named.pop(ev.get("teammate") or "", None)
                 if tool_id in finished:
-                    item, _ = finished.pop(tool_id)
-                    record(item, ev["ts"] - item[1])    # background work: launch -> notice or first reply
-        for item, dur in finished.values():
-            record(item, dur)
+                    item, _, res = finished.pop(tool_id)
+                    record(item, ev["ts"] - item[1], res)    # background work: launch -> notice or first reply
+        for item, dur, res in finished.values():
+            record(item, dur, res)
         if is_main:  # subagent time is already inside the main session's Agent/Task calls
             for name, s in session.items():
                 if s["calls"] >= MIN_SESSION_CALLS:
                     self.models[name]["session_rates"].append((s["turn_s"] + sum(s["tool_max"].values())) / s["calls"])
 
-    def add_tool_time(self, project: str, item: tuple, dur: float) -> float:
-        """Store one tool duration; returns the seconds accepted (0 when filtered out)."""
+    def add_tool_time(self, project: str, item: tuple, dur: float, res: dict | None = None) -> float:
+        """Store one tool duration; returns the seconds accepted (0 when filtered out). A call whose
+        permission prompt a person answered, or that was denied and never ran, is no run time."""
         name, _, inp = item[:3]
-        limit = cc_log.QUICK_TOOL_MAX_SECONDS if name in cc_log.INSTANT_TOOLS else cc_log.LONG_TOOL_MAX_SECONDS
-        if dur < 0 or dur > limit or name in cc_log.HUMAN_TOOLS:
+        quick = name in cc_log.INSTANT_TOOLS or (name == "Bash" and cc_log.is_quick_command(inp.get("command", "")))
+        limit = cc_log.QUICK_TOOL_MAX_SECONDS if quick else cc_log.LONG_TOOL_MAX_SECONDS
+        if dur < 0 or dur > limit or name in cc_log.HUMAN_TOOLS or (res and (res.get("prompted") or res.get("denied"))):
             return 0.0
         if name == "Bash":
             for key in cc_log.command_keys(inp.get("command", "")):

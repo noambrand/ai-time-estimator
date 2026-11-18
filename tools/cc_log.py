@@ -1,4 +1,4 @@
-# [UPDATED v1.6] cc_log.py - shared Claude Code transcript parsing for the AI time estimator
+# [UPDATED v1.7] cc_log.py - shared Claude Code transcript parsing for the AI time estimator
 # Parsing rules follow dioptx/cctime: merge streamed assistant chunks by requestId,
 # keep the usage with the highest output_tokens, tool time = tool_use -> tool_result gap.
 from __future__ import annotations
@@ -45,6 +45,19 @@ MASKED_STATUS = re.compile(r"(?<!\|)\|(?!\|)|;|\|\|")
 FAILURE_MARKERS = re.compile(
     r"Traceback \(most recent call last\)|^FAILED\b|\bFAILED \(|^--- FAIL|^FAIL\b|\b[1-9]\d* (?:failed|failing)\b"
     r"|npm ERR!|\berror(?:\[E\d+\]| TS\d+)?: |^\w*Error: |^Exit code [1-9]", re.MULTILINE)
+
+# Read-only shell utilities that finish in well under a second. A command made only of such steps that took
+# longer than QUICK_TOOL_MAX_SECONDS waited (an approval, a queued call, a slow hook), like a slow Read does.
+QUICK_COMMAND_WORDS = {"ls", "dir", "cat", "head", "tail", "wc", "grep", "egrep", "fgrep", "rg", "sed", "awk", "cut",
+                       "sort", "uniq", "tr", "nl", "column", "file", "stat", "find", "echo", "printf", "pwd", "which",
+                       "type", "basename", "dirname", "realpath", "readlink", "date", "diff", "cmp", "test", "true"}
+QUICK_GIT_SUBCOMMANDS = {"status", "log", "diff", "show", "branch", "rev-parse", "ls-files", "ls-tree", "blame",
+                         "remote", "tag", "describe", "shortlog", "cat-file", "config", "reflog", "merge-base", "grep"}
+QUOTED = re.compile(r'"(?:\\.|[^"\\])*"|\'[^\']*\'')
+HEREDOC = re.compile(r"<<-?\s*['\"]?(\w+)['\"]?[^\n]*\n.*?\n\1\b", re.DOTALL)
+# A person answered a permission prompt for this call ("source" of the permissionDecision Claude Code writes on
+# the tool_result line): the gap holds their reply time. "user_permanent" is a rule the user saved earlier.
+PROMPTED_SOURCES = {"user_temporary", "user_reject"}
 
 
 def parse_ts(text: str) -> float:
@@ -115,6 +128,39 @@ def command_keys(command: str) -> list[str]:
         words.pop(0)
     keys = [" ".join(words[:n]) for n in (3, 2) if len(words) >= n]
     return list(dict.fromkeys(keys)) or words[:1]
+
+
+def is_quick_command(command: str) -> bool:
+    """True when every step of a shell command is a read-only utility (ls, grep, sed -n, git status/log/diff...)."""
+    text = QUOTED.sub('""', HEREDOC.sub("", command or ""))
+    steps = [s.strip() for s in re.split(r"&&|\|\|?|;|\n", text) if s.strip()]
+    steps = [s for s in steps if not re.match(r"(?i)(cd|pushd|popd|set|export|source)\b", s)]
+    return bool(steps) and all(quick_step(s) for s in steps)
+
+
+def quick_step(step: str) -> bool:
+    words = [w for w in step.split() if not re.match(r"^\d?>|^<|^&>", w)]   # drop redirections
+    while words and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0]):         # VAR=value prefixes
+        words.pop(0)
+    if not words:
+        return True
+    name = words[0].strip("\"'").replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if name != "git":
+        return name in QUICK_COMMAND_WORDS
+    rest = words[1:]
+    while rest and rest[0].startswith("-"):                                  # git -C path / -c key=value
+        if rest.pop(0) in ("-C", "-c") and rest:
+            rest.pop(0)
+    return bool(rest) and rest[0].lower() in QUICK_GIT_SUBCOMMANDS
+
+
+def permission_flags(obj: dict) -> tuple[bool, bool]:
+    """(prompted, denied) of a tool_result line: a person answered a permission prompt / the call never ran."""
+    decision = obj.get("permissionDecision")
+    if not isinstance(decision, dict):
+        return False, bool(obj.get("toolDenialKind"))
+    prompted = decision.get("source") in PROMPTED_SOURCES or "grantScope" in decision
+    return prompted, decision.get("decision") == "reject" or bool(obj.get("toolDenialKind"))
 
 
 def written_lines(tool: dict) -> int:
@@ -234,9 +280,11 @@ def to_events(lines: list[dict]) -> list[dict]:
             blocks = content if isinstance(content, list) else []
             results = [b for b in blocks if isinstance(b, dict) and b.get("type") == "tool_result"]
             if results:
+                prompted, denied = permission_flags(obj)
                 events.append({"kind": "result", "ts": ts,
                                "results": [{"id": b.get("tool_use_id"), "error": bool(b.get("is_error")),
-                                            "text": result_text(b)} for b in results]})
+                                            "text": result_text(b), "prompted": prompted, "denied": denied}
+                                           for b in results]})
             elif not obj.get("isMeta"):
                 text = message_text(content)
                 if is_system_line(obj, text):
