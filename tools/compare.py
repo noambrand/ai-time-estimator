@@ -1,7 +1,8 @@
-# [UPDATED v1.6] compare.py - measure what the worker actually did after an estimate, score the estimate,
+# [UPDATED v1.7] compare.py - measure what the worker actually did after an estimate, score the estimate,
 # and show which count and which scenario were wrong. --report summarizes all past comparisons.
 # Usage: python compare.py [--id E2026...] [--session path.jsonl] [--until 2026-11-13T14:05:00]
 #        python compare.py --report
+#        python compare.py --invalidate E2026... [E2026...] [--reason "measured the wrong window"]
 from __future__ import annotations
 
 import argparse
@@ -10,14 +11,21 @@ import math
 import re
 import statistics
 import sys
+import time
 from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
 
 import cc_log
-from estimate import command_names, expected_scenario, likely_counts, scenarios_of
+from estimate import command_names, expected_scenario, is_final, likely_counts, scenarios_of
 
 FIELDS = ("reads", "searches", "edits", "other_calls", "bookkeeping", "commands", "fix_loops", "write_lines")
+# Which window measures an estimate. The work of a background agent is in that agent's own transcript, not in
+# the session that asked; work spread over days fits no single window. Such estimates are scored on the right
+# window or left unscored with a reason - never stored with a wrong actual time.
+MULTI_SESSION_MIN = 480          # a model P50 over a working day spans sessions: unscored unless an end is given
+AGENT_QUIET_SECONDS = 1800       # an agent transcript silent this long has ended its run
+UNMATCHED_GRACE_SECONDS = 3600   # time an agent named by an estimate gets to start before it is left unscored
 
 
 def read_jsonl(path: Path) -> list[dict]:
@@ -59,6 +67,80 @@ def session_streams(path: Path, since: float) -> tuple[list[dict], list[list[dic
     for sub in sorted((path.parent / path.stem / "subagents").glob("*.jsonl")):
         side += [s["events"] for s in cc_log.load_streams(sub, since).values()]
     return main, side
+
+
+def agent_runs(session: Path) -> list[dict]:
+    """Every subagent transcript of a session, with the name, description and type it was launched with
+    (agent-x.meta.json next to agent-x.jsonl; empty when Claude Code wrote none)."""
+    runs = []
+    for path in sorted((session.parent / session.stem / "subagents").glob("*.jsonl")):
+        meta_path = path.with_name(path.stem + ".meta.json")
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+        except (OSError, ValueError):
+            meta = {}
+        meta = meta if isinstance(meta, dict) else {}
+        runs.append({"path": path, "id": path.stem[len("agent-"):] if path.stem.startswith("agent-") else path.stem,
+                     "name": str(meta.get("name") or ""), "description": str(meta.get("description") or ""),
+                     "type": str(meta.get("agentType") or ""), "finished": bool(meta.get("finished"))})
+    return runs
+
+
+def worker_of(est: dict) -> str:
+    """Who does the estimated work: "session" (the session that asked, the default), "agent:<name>" (a background
+    agent launched with that name or description) or "multi_session" (spread over sessions or days)."""
+    worker = str((est.get("counts") or {}).get("worker") or est.get("worker") or "").strip()
+    return worker or "session"
+
+
+def task_end(events: list[dict], start: float) -> float:
+    """The task ends where the user's next message begins a new request. Without one it is still running."""
+    nxt = next((e["ts"] for e in events if e["kind"] == "human" and e["ts"] > start), None)
+    return nxt - 0.001 if nxt is not None else float("inf")
+
+
+def resolve_window(est: dict, session: Path, now: float, next_ts: float = float("inf"),
+                   until: float = float("inf"), force_closed: bool = False) -> dict:
+    """The window that measures an estimate. kind "session" (the asking session, from the go to the user's next
+    message or the next estimate), "agent" (the named agent's own transcripts), "unscored" (with a reason) or
+    "none" (no work yet). `closed`: the window cannot grow any more, so its score is final. `until`: an explicit
+    end (compare.py --until), which also makes a multi-session estimate scorable."""
+    worker = worker_of(est)
+    raw_p50 = float(est.get("raw_p50", est.get("p50", 0)) or 0)
+    if until == float("inf") and (worker == "multi_session" or raw_p50 > MULTI_SESSION_MIN):
+        return {"kind": "unscored", "final": True,
+                "reason": f"spans several sessions (P50 {raw_p50:.0f} min); score it with compare.py --until"}
+    runs = agent_runs(session)
+    name = worker[len("agent:"):].strip() if worker.startswith("agent:") else ""
+    if not name and worker == "session":
+        task = str(est.get("task", "")).strip().lower()           # an estimate named after an agent it launched
+        if task and any(task in (r["name"].lower(), r["description"].lower()) for r in runs):
+            name = task
+    if name:
+        wanted = name.lower()
+        found = []
+        for run in runs:
+            if wanted not in (run["name"].lower(), run["description"].lower(), run["id"].lower()):
+                continue
+            events = [e for s in cc_log.load_streams(run["path"], est["ts"], until).values() for e in s["events"]]
+            if events:
+                found.append((run, events))
+        if not found:
+            final = force_closed or now - est["ts"] > UNMATCHED_GRACE_SECONDS
+            return {"kind": "unscored", "final": final, "reason": f"no transcript of agent '{name}' after the estimate"}
+        found.sort(key=lambda item: item[1][0].get("ts", item[1][0].get("end", 0)))
+        events = [e for _, evs in found for e in evs]
+        last = max(e["end"] if e["kind"] == "turn" else e["ts"] for e in events)
+        closed = (force_closed or until < float("inf") or all(run["finished"] for run, _ in found)
+                  or now - last > AGENT_QUIET_SECONDS)
+        return {"kind": "agent", "worker": name, "events": events, "side": [], "until": until, "closed": closed}
+    main_events, side = session_streams(session, est["ts"])
+    if not any(e["kind"] == "turn" for e in main_events):
+        return {"kind": "none"}
+    end = min(next_ts, until)
+    end = min(end, task_end(main_events, work_start(main_events, est["ts"], end)))
+    return {"kind": "session", "events": main_events, "side": side, "until": end,
+            "closed": force_closed or end < float("inf")}
 
 
 def work_start(events: list[dict], est_ts: float, until: float) -> float:
@@ -223,13 +305,18 @@ def score(est: dict, actual: dict, exact: bool) -> str:
 
 
 def report() -> None:
-    rows = read_jsonl(cc_log.DATA_DIR / "actuals.jsonl")
+    every = read_jsonl(cc_log.DATA_DIR / "actuals.jsonl")
+    rows = [r for r in every if is_final(r)]
+    left_out = Counter(r.get("status") for r in every if not is_final(r))
     if not rows:
-        sys.exit("No comparisons yet.")
+        sys.exit("No comparisons yet." + (f" Not counted: {dict(left_out)}" if left_out else ""))
     inside = sum(1 for r in rows if r["p10"] <= r["active_min"] <= r["p90"])
     ratios = [r["active_min"] / r["p50"] for r in rows if r["p50"]]
     print(f"Comparisons: {len(rows)} | inside P10-P90: {inside}/{len(rows)} (aim ~80%) | "
           f"median actual/P50: {statistics.median(ratios):.2f} (1.00 = no bias)")
+    if left_out:
+        print("Not counted: " + ", ".join(f"{n} {status}" for status, n in sorted(left_out.items()))
+              + " (open = window still running; unscored = no window could measure it; invalid = marked by hand)")
     print("Median actual/predicted per count (1.00 = unbiased; >1 = estimator under-counts):")
     for f in FIELDS:
         vals = [(r["actual"].get(f, 0) + 1) / (r["predicted"].get(f, 0) + 1) for r in rows]  # older rows lack new fields
@@ -258,9 +345,20 @@ def main() -> None:
     parser.add_argument("--session", help="transcript .jsonl (default: the one containing the estimate id)")
     parser.add_argument("--until", help="ignore activity after this local time, e.g. 2026-11-13T14:05:00")
     parser.add_argument("--report", action="store_true", help="summarize all past comparisons")
+    parser.add_argument("--invalidate", nargs="+", metavar="ID",
+                        help="mark scored estimates as measured wrongly: kept, but never learned from or reported")
+    parser.add_argument("--reason", default="marked invalid by hand", help="why (with --invalidate)")
+    parser.add_argument("--rescore", nargs="*", metavar="ID",
+                        help="score these estimates again (default: every scored one) with the Stop hook's window rules")
     args = parser.parse_args()
     if args.report:
         report()
+        return
+    if args.invalidate:
+        invalidate(args.invalidate, args.reason)
+        return
+    if args.rescore is not None:
+        rescore(args.rescore)
         return
 
     estimates = read_jsonl(cc_log.DATA_DIR / "estimates.jsonl")
@@ -270,17 +368,94 @@ def main() -> None:
     found = (Path(args.session), True) if args.session else find_session(est)
     if not found:
         sys.exit("No session activity found after this estimate. Pass --session.")
+    until = datetime.fromisoformat(args.until).timestamp() if args.until else float("inf")
+    win = resolve_window(est, found[0], time.time(), until=until, force_closed=True)
+    if win["kind"] == "unscored":
+        store_unscored(est, found[0], win["reason"])
+        print(f"Estimate {est['id']} left unscored: {win['reason']}.")
+        return
+    if win["kind"] == "agent":
+        print(f"Measured on the transcript of agent '{win['worker']}', which did the work.")
+        score_and_log(est, found[0], found[1], until, win["events"], [], window="agent")
+        return
     main_events, side = session_streams(found[0], est["ts"])
     if not main_events:
         sys.exit(f"No activity after the estimate in {found[0]}. Pass --session.")
-    until = datetime.fromisoformat(args.until).timestamp() if args.until else float("inf")
     score_and_log(est, found[0], found[1], until, main_events, side)
 
 
+def store_row(row: dict) -> dict:
+    """Write one row to actuals.jsonl, replacing an earlier row of the same estimate. A row marked invalid by
+    hand stays invalid."""
+    log_path = cc_log.DATA_DIR / "actuals.jsonl"
+    rows = read_jsonl(log_path)
+    old = next((r for r in rows if r["estimate_id"] == row["estimate_id"]), None)
+    if old and old.get("status") == "invalid":
+        row = dict(row, status="invalid", invalid_reason=old.get("invalid_reason", ""))
+    rows = [r for r in rows if r["estimate_id"] != row["estimate_id"]] + [row]
+    log_path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    return row
+
+
+def store_unscored(est: dict, session: Path, reason: str) -> dict:
+    """An estimate no window can measure: kept with its reason, so it is neither re-scored nor learned from."""
+    return store_row({"estimate_id": est["id"], "session": str(session), "task": est["task"],
+                      "task_type": est.get("task_type", "other"), "p10": est["p10"], "p50": est["p50"],
+                      "p90": est["p90"], **{f"raw_{q}": est.get(f"raw_{q}", est[q]) for q in ("p10", "p50", "p90")},
+                      "status": "unscored", "reason": reason})
+
+
+def rescore(ids: list[str]) -> None:
+    """Score estimates again with the window rules of the Stop hook (the right worker, unscored when no window
+    fits, open while running). For rows stored by older versions."""
+    import autoscore
+    rows = {r["estimate_id"]: r for r in read_jsonl(cc_log.DATA_DIR / "actuals.jsonl")}
+    estimates = {e["id"]: e for e in read_jsonl(cc_log.DATA_DIR / "estimates.jsonl")}
+    wanted = list(ids) or list(rows)
+    sessions: dict[Path, set] = defaultdict(set)
+    for eid in wanted:
+        est = estimates.get(eid)
+        if not est:
+            print(f"{eid}: not in estimates.jsonl")
+            continue
+        found = (Path(rows[eid]["session"]), True) if eid in rows and rows[eid].get("session") else find_session(est)
+        if not found or not found[0].is_file():
+            print(f"{eid}: no transcript found")
+            continue
+        sessions[found[0]].add(eid)
+    for session, eids in sessions.items():
+        new = {r["estimate_id"]: r for r in autoscore.score_session(session, only=eids, rescore=True)}
+        for eid in sorted(eids):
+            r = new.get(eid)
+            if not r:
+                print(f"{eid}: not scored (superseded by a later estimate, or no work in its window yet)")
+            elif "active_min" in r:
+                print(f"{eid}: {r['status']} | {r.get('window', 'session')} window | actual {r['active_min']:.1f} min"
+                      f" vs P50 {r['p50']:.1f}")
+            else:
+                print(f"{eid}: {r['status']} | {r.get('reason', r.get('invalid_reason', ''))}")
+
+
+def invalidate(ids: list[str], reason: str) -> None:
+    """Mark rows of actuals.jsonl as measured wrongly. Their numbers stay for the record; the self-correction,
+    the track record and --report leave them out, and the Stop hook never scores them again."""
+    log_path = cc_log.DATA_DIR / "actuals.jsonl"
+    rows = read_jsonl(log_path)
+    known = {r["estimate_id"] for r in rows}
+    for r in rows:
+        if r["estimate_id"] in ids:
+            r.update(status="invalid", invalid_reason=reason)
+    log_path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    for eid in ids:
+        print(f"{eid}: {'marked invalid' if eid in known else 'no scored row with this id'}")
+
+
 def score_and_log(est: dict, session: Path, exact: bool, until: float,
-                  main_events: list[dict] | None = None, side: list[list[dict]] | None = None) -> dict:
-    """Measure the session after the estimate, print the score, and store it in actuals.jsonl
-    (replacing an earlier score of the same estimate). Returns the stored row."""
+                  main_events: list[dict] | None = None, side: list[list[dict]] | None = None,
+                  status: str = "final", window: str = "session") -> dict:
+    """Measure the window after the estimate, print the score, and store it in actuals.jsonl (replacing an
+    earlier score of the same estimate). status "open": the window is still running, so the row is not learned
+    from yet. Returns the stored row."""
     if main_events is None:
         main_events, side = session_streams(session, est["ts"])
     actual = measure(main_events, side or [], est["ts"], until)
@@ -297,11 +472,8 @@ def score_and_log(est: dict, session: Path, exact: bool, until: float,
            "turns": actual["turns"], "subagent_calls": actual["subagent_calls"], "baseline": est.get("baseline"),
            "main_scenario": expected_scenario(scenarios).get("name", "single"), "closest_scenario": closest,
            "predicted": likely_counts(expected_scenario(scenarios), command_names(est["counts"])),
-           "actual": actual["counts"]}
-    log_path = cc_log.DATA_DIR / "actuals.jsonl"
-    rows = [r for r in read_jsonl(log_path) if r["estimate_id"] != est["id"]] + [row]  # re-scoring replaces
-    log_path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
-    return row
+           "actual": actual["counts"], "status": status, "window": window}
+    return store_row(row)
 
 
 if __name__ == "__main__":

@@ -257,6 +257,12 @@ def simulate(counts: dict, rates: dict, mr: dict, project: str, n: int = SIMULAT
             "likely_calls": likely_calls, "seconds_per_call": spc}
 
 
+def is_final(row: dict) -> bool:
+    """A scored estimate the self-correction, the track record and compare.py --report may use: measured on a
+    closed window and not marked invalid. Rows written before row statuses existed count as final."""
+    return row.get("status", "final") == "final" and "active_min" in row
+
+
 def scored_estimates() -> list[dict]:
     """Rows of actuals.jsonl (written by compare.py / the Stop hook), oldest first."""
     path = cc_log.DATA_DIR / "actuals.jsonl"
@@ -281,7 +287,7 @@ def correction(rows: list[dict]) -> dict | None:
     """Learned from the newest scored estimates: shift = median real/predicted time; width = the smallest
     log-space widening (or narrowing) of the model's range that would have held ~80% of those real times.
     Measured from this machine's own results, not a safety factor."""
-    rows = [r for r in rows if r.get("active_min", 0) > 0 and raw_of(r, "p50") > 0][-RECENT_SCORED:]
+    rows = [r for r in rows if is_final(r) and r["active_min"] > 0 and raw_of(r, "p50") > 0][-RECENT_SCORED:]
     if len(rows) < MIN_SCORED:
         return None
     shift = statistics.median(r["active_min"] / raw_of(r, "p50") for r in rows)
@@ -302,7 +308,7 @@ def corrected(p10: float, p50: float, p90: float, corr: dict) -> tuple[float, fl
 
 
 def track_record(rows: list[dict]) -> str:
-    rows = [r for r in rows if "active_min" in r]
+    rows = [r for r in rows if is_final(r)]
     if not rows:
         return "no scored estimates yet"
     inside = sum(r["p10"] <= r["active_min"] <= r["p90"] for r in rows)
@@ -337,6 +343,7 @@ def main() -> None:
 
     est_id = "E" + time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:3]  # unique even within one second
     record = {"id": est_id, "ts": time.time(), "project": project, "model": model,
+              "worker": counts.get("worker", "session"),
               "effort": counts.get("worker_effort", ""), "task": counts.get("task", ""),
               "task_type": counts.get("task_type", "other"), "counts": counts,
               "p10": round(p10, 2), "p50": round(p50, 2), "p90": round(p90, 2),
