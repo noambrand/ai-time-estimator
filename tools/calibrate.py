@@ -1,4 +1,4 @@
-# [UPDATED v1.6] calibrate.py - measure unit rates (seconds per model turn, per tool, per command)
+# [UPDATED v1.7] calibrate.py - measure unit rates (seconds per model turn, per tool, per command)
 # from your own Claude Code transcripts. Read-only. Writes ~/.claude/ai-time-estimator/rates.json
 from __future__ import annotations
 
@@ -34,6 +34,7 @@ class Accumulator:
         self.tools: dict[str, list[float]] = defaultdict(list)
         self.commands: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
         self.loops: list[int] = []
+        self.launches: list[float] = []          # seconds the session spent starting background work
         self.turns_seen = 0
         self.turns_with_usage = 0
 
@@ -52,12 +53,18 @@ class Accumulator:
         # Workflow, background Bash...): then its result only says "launched", and the real end is the later
         # completion notice that names its tool_use_id, or - for a named agent - its first message back
         # ("teammate_id" = the name it was launched with). So results wait here until the stream ends.
+        # The run time of background work is a real sample of that tool or command (a build takes as long in the
+        # background), but the session only spends the launch on it: session rates count the launch, not the run.
         finished: dict[str, tuple[tuple, float, dict]] = {}
         named: dict[str, str] = {}               # agent name -> tool_use_id of its latest launch
 
-        def record(item: tuple, dur: float, res: dict) -> None:
+        def record(item: tuple, dur: float | None, res: dict, active: float | None = None) -> None:
+            kept = self.add_tool_time(project, item, dur, res) if dur is not None else 0.0
             tool_s = session[item[3]]["tool_max"]
-            tool_s[item[4]] = max(tool_s[item[4]], self.add_tool_time(project, item, dur, res))
+            tool_s[item[4]] = max(tool_s[item[4]], kept if active is None else active)
+
+        def launch_seconds(dur: float) -> float:
+            return dur if 0 <= dur <= cc_log.QUICK_TOOL_MAX_SECONDS else 0.0
 
         for ev in events:
             if ev["kind"] == "turn":
@@ -98,13 +105,19 @@ class Accumulator:
                     item = pending.pop(res["id"], None)
                     if item:
                         finished[res["id"]] = (item, ev["ts"] - item[1], res)
+                        if res.get("launched") or item[2].get("run_in_background"):
+                            self.launches.append(launch_seconds(ev["ts"] - item[1]))
             elif ev["kind"] == "system":
                 tool_id = ev.get("tool_use_id") or named.pop(ev.get("teammate") or "", None)
                 if tool_id in finished:
-                    item, _, res = finished.pop(tool_id)
-                    record(item, ev["ts"] - item[1], res)    # background work: launch -> notice or first reply
+                    item, launch, res = finished.pop(tool_id)
+                    # background work: runs launch -> notice or first reply; the session spent the launch
+                    record(item, ev["ts"] - item[1], res, active=launch_seconds(launch))
         for item, dur, res in finished.values():
-            record(item, dur, res)
+            if res.get("launched") or item[2].get("run_in_background"):
+                record(item, None, res, active=launch_seconds(dur))   # no notice in this stream: run time unknown
+            else:
+                record(item, dur, res)
         if is_main:  # subagent time is already inside the main session's Agent/Task calls
             for name, s in session.items():
                 if s["calls"] >= MIN_SESSION_CALLS:
@@ -167,6 +180,7 @@ class Accumulator:
             "commands": {p: {k: keep_sample(v, rng) for k, v in cmds.items() if len(v) >= 2}
                          for p, cmds in self.commands.items()},
             "fix_loop_calls": {"n": len(self.loops), "median": median_or_none(self.loops, 5)},
+            "background_launch_seconds": median_or_none(self.launches, 3),
         }
 
 

@@ -58,6 +58,10 @@ HEREDOC = re.compile(r"<<-?\s*['\"]?(\w+)['\"]?[^\n]*\n.*?\n\1\b", re.DOTALL)
 # A person answered a permission prompt for this call ("source" of the permissionDecision Claude Code writes on
 # the tool_result line): the gap holds their reply time. "user_permanent" is a rule the user saved earlier.
 PROMPTED_SOURCES = {"user_temporary", "user_reject"}
+# The tool_result of a call that started background work (a background command, an async or named agent, a
+# workflow, a monitor). The session is free at once; the work ends at a later completion notice.
+LAUNCH_RESULT = re.compile(r"\s*(?:Command running in background|Async agent launched|Spawned successfully|"
+                           r"Fork started|Workflow launched in background|Monitor started)", re.IGNORECASE)
 
 
 def parse_ts(text: str) -> float:
@@ -87,12 +91,35 @@ def tool_category(name: str) -> str:
     return "other_calls"
 
 
-def result_text(block: dict) -> str:
-    """Tail of a tool_result's text (content is a string or a list of text blocks)."""
+def result_content(block: dict) -> str:
+    """Text of a tool_result (content is a string or a list of text blocks)."""
     content = block.get("content")
     if isinstance(content, list):
         content = "\n".join(c.get("text", "") for c in content if isinstance(c, dict))
-    return content[-RESULT_TEXT_CHARS:] if isinstance(content, str) else ""
+    return content if isinstance(content, str) else ""
+
+
+def result_text(block: dict) -> str:
+    """Tail of a tool_result's text."""
+    return result_content(block)[-RESULT_TEXT_CHARS:]
+
+
+def launched(obj: dict, text: str) -> bool:
+    """True when a tool_result line says its call started background work (structured field or launch text)."""
+    tur = obj.get("toolUseResult")
+    return bool(isinstance(tur, dict) and (tur.get("backgroundTaskId") or tur.get("isAsync"))) or bool(
+        LAUNCH_RESULT.match(text))
+
+
+def background_ids(events: list[dict]) -> set:
+    """Tool calls that started background work: run_in_background, or a result saying it was launched."""
+    ids = set()
+    for ev in events:
+        if ev["kind"] == "turn":
+            ids.update(t["id"] for t in ev["tools"] if t["input"].get("run_in_background"))
+        elif ev["kind"] == "result":
+            ids.update(r["id"] for r in ev["results"] if r.get("launched"))
+    return ids
 
 
 def message_text(content) -> str:
@@ -152,6 +179,16 @@ def quick_step(step: str) -> bool:
         if rest.pop(0) in ("-C", "-c") and rest:
             rest.pop(0)
     return bool(rest) and rest[0].lower() in QUICK_GIT_SUBCOMMANDS
+
+
+def is_notice(obj: dict, text: str) -> bool:
+    """A system line that reports background work: a task's completion notice or a message from another
+    session or teammate (not a compaction summary, skill text or /command output)."""
+    origin = obj.get("origin")
+    kind = origin.get("kind") if isinstance(origin, dict) else origin
+    return (kind in SYSTEM_ORIGINS or obj.get("turnOrigin") in ("task_notification", "peer")
+            or text.lstrip().startswith(("<task-notification>", "Another Claude session sent a message"))
+            or bool(TEAMMATE_ID.search(text)))
 
 
 def permission_flags(obj: dict) -> tuple[bool, bool]:
@@ -281,17 +318,20 @@ def to_events(lines: list[dict]) -> list[dict]:
             results = [b for b in blocks if isinstance(b, dict) and b.get("type") == "tool_result"]
             if results:
                 prompted, denied = permission_flags(obj)
+                texts = [result_content(b) for b in results]
                 events.append({"kind": "result", "ts": ts,
                                "results": [{"id": b.get("tool_use_id"), "error": bool(b.get("is_error")),
-                                            "text": result_text(b), "prompted": prompted, "denied": denied}
-                                           for b in results]})
+                                            "text": text[-RESULT_TEXT_CHARS:], "prompted": prompted,
+                                            "denied": denied, "launched": launched(obj, text)}
+                                           for b, text in zip(results, texts)]})
             elif not obj.get("isMeta"):
                 text = message_text(content)
                 if is_system_line(obj, text):
                     notice = NOTICE_TOOL_ID.search(text)
                     teammate = TEAMMATE_ID.search(text)
                     events.append({"kind": "system", "ts": ts, "tool_use_id": notice.group(1) if notice else None,
-                                   "teammate": teammate.group(1) if teammate else None})
+                                   "teammate": teammate.group(1) if teammate else None,
+                                   "notice": is_notice(obj, text)})
                 else:
                     events.append({"kind": "human", "ts": ts, "text": text[:HUMAN_TEXT_CHARS]})
         prev_ts = ts

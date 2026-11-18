@@ -1,4 +1,4 @@
-# [UPDATED v1.1] backtest.py - test the time model on your own history, without waiting for estimates.
+# [UPDATED v1.2] backtest.py - test the time model on your own history, without waiting for estimates.
 # Every past request (a typed message up to the next one) is replayed: its REAL tool calls go into
 # estimate.simulate() as one scenario, and the predicted P10/P50/P90 are compared with its real active time.
 # Counts are exact here, so this measures the time model alone, not the estimator's counting.
@@ -25,11 +25,14 @@ MIN_BAND_FACTORS = 20     # below this, a size band uses the factors of all band
 
 def request_counts(act: dict) -> dict:
     """estimate.py input for one past request: its real calls as one scenario. No fix loops: the
-    reruns and fix edits of a past request are already among its real calls."""
+    reruns and fix edits of a past request are already among its real calls. Calls that started background
+    work go to `background`: the request only spent their launch."""
     c = act["counts"]
     scenario = {"name": "real", "reads": c["reads"], "searches": c["searches"], "edits": c["edits"],
-                "write_lines": c["write_lines"], "runs": act["runs"], "tools": act["tools"]}
-    counts = {"commands": [{"cmd": k} for k in act["runs"]], "scenarios": [scenario]}
+                "write_lines": c["write_lines"], "runs": act["runs"], "tools": act["tools"],
+                "background": act.get("background", {})}
+    commands = list(act["runs"]) + [k for k in act.get("background_commands", []) if k not in act["runs"]]
+    counts = {"commands": [{"cmd": k} for k in commands], "scenarios": [scenario]}
     if act["first_ctx"]:
         counts["start_context_tokens"] = act["first_ctx"]
     if act["effort"]:

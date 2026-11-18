@@ -77,13 +77,16 @@ class Effects(IsolatedTest):
             tr.result(read, gap=1)
         return tr
 
-    def test_waiting_for_a_background_agent_is_active_time(self):
+    def test_waiting_for_a_background_agent_is_not_active_time(self):
+        # The session launched the agent, ended its turn and sat idle until the notice: a wait, not work.
         self.background_session().write(self.session)
         main, side = compare.session_streams(self.session, self.base)
         act = compare.measure(main, side, self.base, float("inf"))
         self.assertEqual(act["human_min"], 0)
-        self.assertAlmostEqual(act["active_min"] * 60, 3 + 1 + 2 + 120 + 2 * 6, places=3)
+        self.assertAlmostEqual(act["background_wait_min"] * 60, 120, places=3)
+        self.assertAlmostEqual(act["active_min"] * 60, 3 + 1 + 2 + 2 * 6, places=3)
         self.assertEqual((act["counts"]["other_calls"], act["counts"]["reads"]), (1, 2))
+        self.assertEqual((act["background"], act["tools"]), ({"Agent": 1}, {}))
 
     def test_a_notice_is_not_the_go(self):
         tr = Transcript(self.base)

@@ -1,4 +1,4 @@
-# [UPDATED v1.5] compare.py - measure what the worker actually did after an estimate, score the estimate,
+# [UPDATED v1.6] compare.py - measure what the worker actually did after an estimate, score the estimate,
 # and show which count and which scenario were wrong. --report summarizes all past comparisons.
 # Usage: python compare.py [--id E2026...] [--session path.jsonl] [--until 2026-11-13T14:05:00]
 #        python compare.py --report
@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 
 import cc_log
-from estimate import expected_scenario, likely_counts, scenarios_of
+from estimate import command_names, expected_scenario, likely_counts, scenarios_of
 
 FIELDS = ("reads", "searches", "edits", "other_calls", "bookkeeping", "commands", "fix_loops", "write_lines")
 
@@ -91,15 +91,22 @@ def requests(events: list[dict]) -> list[dict]:
 
 
 def measure(events: list[dict], side: list[list[dict]], est_ts: float, until: float) -> dict:
+    """What happened in one window. Active time = wall time minus human waits minus the time the session sat
+    idle waiting for background work (it ended its turn with nothing running, until a notice woke it)."""
     start = work_start(events, est_ts, until)
     counts: Counter = Counter()
     runs: Counter = Counter()      # shell commands run, as typed (estimate.py looks each one up)
     names: Counter = Counter()     # other tools by name (WebFetch, Agent, TaskUpdate...)
+    background: Counter = Counter()  # calls that started background work: command as typed, or tool name
+    background_cmds: set = set()
     models: Counter = Counter()
     efforts: Counter = Counter()
     tracker = cc_log.RetryTracker()
     asked: dict[str, tuple[str, float]] = {}   # tool id -> (name, call time) for calls that may wait on the user
-    model_s = human_s = 0.0
+    bg_ids = cc_log.background_ids(events)
+    running: set = set()           # foreground calls without a result yet
+    idle = False                   # the last turn ended with no tool call and nothing runs in the foreground
+    model_s = human_s = bg_wait_s = 0.0
     turns = first_ctx = 0
     prev = last = start
     for ev in events:
@@ -108,6 +115,7 @@ def measure(events: list[dict], side: list[list[dict]], est_ts: float, until: fl
             continue
         if ev["kind"] == "human":
             human_s += max(0.0, ev["ts"] - prev)
+            idle = False
         elif ev["kind"] == "turn":
             turns += 1
             models[ev.get("model", "")] += 1
@@ -117,18 +125,27 @@ def measure(events: list[dict], side: list[list[dict]], est_ts: float, until: fl
             for tool in ev["tools"]:
                 category = cc_log.tool_category(tool["name"])
                 counts[category] += 1
-                if category == "commands":
-                    runs[str(tool["input"].get("command", ""))] += 1
-                elif category in ("other_calls", "bookkeeping"):
-                    names[tool["name"]] += 1
+                command = str(tool["input"].get("command", ""))
+                if tool["id"] in bg_ids:
+                    background[command if category == "commands" else tool["name"]] += 1
+                    if category == "commands":
+                        background_cmds.add(command)
+                else:
+                    running.add(tool["id"])
+                    if category == "commands":
+                        runs[command] += 1
+                    elif category in ("other_calls", "bookkeeping"):
+                        names[tool["name"]] += 1
                 counts["write_lines"] += cc_log.written_lines(tool) if tool["name"] in cc_log.EDIT_TOOLS else 0
                 if tracker.on_call(tool) is not None:
                     counts["fix_loops"] += 1
                 if tool["name"] in cc_log.HUMAN_TOOLS or tool["name"] in cc_log.QUICK_TOOLS or (
-                        tool["name"] == "Bash" and cc_log.is_quick_command(str(tool["input"].get("command", "")))):
+                        tool["name"] == "Bash" and cc_log.is_quick_command(command)):
                     asked[tool["id"]] = (tool["name"], tool["ts"])
+            idle = not ev["tools"] and not running
         elif ev["kind"] == "result":
             for res in ev["results"]:
+                running.discard(res["id"])
                 tracker.on_result(res["id"], res["error"], res.get("text", ""))
                 name, called = asked.pop(res["id"], ("", 0.0))
                 # The user answering a question, or approving a quick tool (Read/Edit/ls/grep taking 30+ s, or
@@ -136,8 +153,12 @@ def measure(events: list[dict], side: list[list[dict]], est_ts: float, until: fl
                 if name in cc_log.HUMAN_TOOLS or (name and (res.get("prompted")
                                                             or ev["ts"] - called > cc_log.QUICK_TOOL_MAX_SECONDS)):
                     human_s += max(0.0, ev["ts"] - prev)
-        # "system" events (a background agent finished, a summary...) are neither work nor a human wait:
-        # the time up to them stays active time.
+            idle = False
+        elif idle and ev.get("notice"):
+            # A notice (a background agent or command finished, a teammate wrote) after the session had
+            # stopped: the gap was a wait for background results, not work and not a human wait. Other system
+            # lines (a compaction summary...) keep the time before them as active time.
+            bg_wait_s += max(0.0, ev["ts"] - prev)
         prev = last = t
     # Subagent time is already inside the main session's Task/Agent call; their own calls are reported apart.
     sub = Counter()
@@ -148,16 +169,18 @@ def measure(events: list[dict], side: list[list[dict]], est_ts: float, until: fl
                 sub["calls"] += len(ev["tools"])
     wall = last - start
     return {"start": start, "end": last, "wall_min": wall / 60, "human_min": human_s / 60,
-            "active_min": (wall - human_s) / 60, "model_min": model_s / 60, "turns": turns,
+            "background_wait_min": bg_wait_s / 60, "active_min": (wall - human_s - bg_wait_s) / 60,
+            "model_min": model_s / 60, "turns": turns,
             "counts": {f: counts[f] for f in FIELDS}, "subagent_turns": sub["turns"], "subagent_calls": sub["calls"],
-            "runs": dict(runs), "tools": dict(names), "first_ctx": first_ctx,
+            "runs": dict(runs), "tools": dict(names), "background": dict(background),
+            "background_commands": sorted(background_cmds), "first_ctx": first_ctx,
             "model": models.most_common(1)[0][0] if models else "",
             "effort": efforts.most_common(1)[0][0] if efforts else ""}
 
 
 def closest_scenario(est: dict, act: dict) -> str:
     def distance(s: dict) -> float:
-        pred = likely_counts(s)
+        pred = likely_counts(s, command_names(est["counts"]))
         return sum(abs(math.log((act[f] + 1) / (pred[f] + 1))) for f in FIELDS)
     best = min(scenarios_of(est["counts"]), key=distance)
     return best.get("name", "single")
@@ -165,7 +188,7 @@ def closest_scenario(est: dict, act: dict) -> str:
 
 def score(est: dict, actual: dict, exact: bool) -> str:
     scenarios = scenarios_of(est["counts"])
-    pred = likely_counts(expected_scenario(scenarios))
+    pred = likely_counts(expected_scenario(scenarios), command_names(est["counts"]))
     act = actual["counts"]
     a = actual["active_min"]
     verdict = "inside P10-P90" if est["p10"] <= a <= est["p90"] else ("ABOVE P90" if a > est["p90"] else "BELOW P10")
@@ -175,7 +198,8 @@ def score(est: dict, actual: dict, exact: bool) -> str:
         print("WARNING: estimate id not found in any transcript; session guessed by project. Pass --session to be sure.")
     print(f"Predicted P10 {est['p10']:.1f} | P50 {est['p50']:.1f} | P90 {est['p90']:.1f} min"
           + (f" | simple baseline {est['baseline']:.1f} min" if est.get("baseline") else ""))
-    print(f"Actual AI time {a:.1f} min -> {verdict}  (wall {actual['wall_min']:.1f}, human waits {actual['human_min']:.1f} excluded)")
+    print(f"Actual AI time {a:.1f} min -> {verdict}  (wall {actual['wall_min']:.1f}, human waits {actual['human_min']:.1f}"
+          f" and waits for background work {actual.get('background_wait_min', 0):.1f} excluded)")
     print(f"Actual split: model {actual['model_min']:.1f} min in {actual['turns']} turns "
           f"(predicted ~{est['median_turns']:.0f}) | tools+commands {actual['active_min'] - actual['model_min']:.1f} min")
     if actual["subagent_calls"]:
@@ -270,9 +294,11 @@ def score_and_log(est: dict, session: Path, exact: bool, until: float,
            # the model's own numbers (before the self-correction), which estimate.correction() learns from
            **{f"raw_{q}": est.get(f"raw_{q}", est[q]) for q in ("p10", "p50", "p90")},
            "active_min": round(actual["active_min"], 2), "human_min": round(actual["human_min"], 2),
+           "background_wait_min": round(actual["background_wait_min"], 2),
            "turns": actual["turns"], "subagent_calls": actual["subagent_calls"], "baseline": est.get("baseline"),
            "main_scenario": expected_scenario(scenarios).get("name", "single"), "closest_scenario": closest,
-           "predicted": likely_counts(expected_scenario(scenarios)), "actual": actual["counts"]}
+           "predicted": likely_counts(expected_scenario(scenarios), command_names(est["counts"])),
+           "actual": actual["counts"]}
     log_path = cc_log.DATA_DIR / "actuals.jsonl"
     rows = [r for r in read_jsonl(log_path) if r["estimate_id"] != est["id"]] + [row]  # re-scoring replaces
     log_path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
