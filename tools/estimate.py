@@ -1,6 +1,8 @@
 # [UPDATED v1.5] estimate.py - turn the time-estimator's scenarios (operation counts) into
 # P10/P50/P90 wall-clock minutes, using the rates measured by calibrate.py.
 # Usage: python estimate.py counts.json      or      python estimate.py - < counts.json
+#        python estimate.py --record-job NAME SECONDS   (a measured run of a named long job, kept in jobs.jsonl)
+#        python estimate.py --jobs                      (the recorded jobs)
 from __future__ import annotations
 
 import argparse
@@ -29,6 +31,7 @@ FALLBACK_LAUNCH_SECONDS = 1.0    # starting background work, until the logs hold
 MIN_SCORED = 10                  # scored estimates needed before shown ranges correct themselves
 RECENT_SCORED = 20               # the correction learns from the newest scored estimates only
 TARGET_INSIDE = 0.8              # share of real times a P10-P90 range should hold
+RECENT_JOB_RUNS = 20             # the newest recorded runs of a named job are its samples
 SPREAD_ON_COMMANDS = True        # scale measured shell-command samples too: the backtest holds 84% inside P10-P90 with it, 67% without
 
 
@@ -146,6 +149,43 @@ def fixed_seconds(command: dict):
     return None if value is None else float(value)
 
 
+def jobs_path() -> Path:
+    return cc_log.DATA_DIR / "jobs.jsonl"
+
+
+def record_job(name: str, seconds: float) -> dict:
+    """Append one measured run of a named long job (a test suite, a corpus run, a release build...)."""
+    if not name.strip() or seconds <= 0:
+        raise ValueError("a job needs a name and a positive number of seconds")
+    row = {"name": name.strip(), "seconds": round(float(seconds), 1), "ts": time.time()}
+    cc_log.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    with open(jobs_path(), "a", encoding="utf-8") as out:
+        out.write(json.dumps(row) + "\n")
+    return row
+
+
+def load_jobs() -> dict[str, list[float]]:
+    """{job name (lower case): the newest RECENT_JOB_RUNS recorded seconds}."""
+    path = jobs_path()
+    runs: dict[str, list[float]] = {}
+    if path.exists():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                row = json.loads(line)
+                runs.setdefault(str(row["name"]).strip().lower(), []).append(float(row["seconds"]))
+            except (ValueError, KeyError, TypeError):
+                continue
+    return {k: v[-RECENT_JOB_RUNS:] for k, v in runs.items()}
+
+
+def job_of(command: dict, jobs: dict) -> str | None:
+    """The recorded job a declared command runs: its "job" field, or a command named exactly like a job."""
+    for name in (command.get("job"), command.get("cmd")):
+        if name and str(name).strip().lower() in jobs:
+            return str(name).strip().lower()
+    return None
+
+
 def speed_factor(rng: random.Random, spread: dict, minutes: float) -> float:
     """A real/predicted factor of a past request of about this predicted size (see backtest.speed_factors)."""
     for band in spread["bands"]:
@@ -159,7 +199,7 @@ def quick_seconds(rates: dict, names: set[str]) -> float:
     return statistics.median(vals) if vals else FALLBACK_QUICK_SECONDS
 
 
-def simulate(counts: dict, rates: dict, mr: dict, project: str, n: int = SIMULATIONS) -> dict:
+def simulate(counts: dict, rates: dict, mr: dict, project: str, n: int = SIMULATIONS, jobs: dict | None = None) -> dict:
     rng = random.Random(1)
     turn_rates, effort_note = effort_rates(mr, counts.get("worker_effort", ""))
     sample_turn, usable = turn_sampler(turn_rates, rates["bucket_tokens"])
@@ -177,6 +217,12 @@ def simulate(counts: dict, rates: dict, mr: dict, project: str, n: int = SIMULAT
         if cmd in fixed:
             cmd_samples[cmd] = [fixed[cmd]]
             notes.append(f"command '{cmd}': KNOWN WAIT {fixed[cmd]:.0f} s per run (a floor, not scaled)")
+            continue
+        job = job_of(declared_cmds.get(cmd, {"cmd": cmd}), jobs or {})
+        if job:
+            cmd_samples[cmd] = jobs[job]
+            notes.append(f"command '{cmd}': MEASURED job '{job}' n={len(jobs[job])} "
+                         f"(median {statistics.median(jobs[job]):.0f} s, from jobs.jsonl)")
             continue
         fallback = declared_cmds.get(cmd, {}).get("fallback_seconds")
         cmd_samples[cmd], source = command_samples(rates, project, cmd, fallback)
@@ -338,8 +384,28 @@ def track_record(rows: list[dict]) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="P10/P50/P90 AI execution time from operation-count scenarios.")
-    parser.add_argument("counts", help="counts JSON file, or - for stdin")
+    parser.add_argument("counts", nargs="?", help="counts JSON file, or - for stdin")
+    parser.add_argument("--record-job", nargs=2, metavar=("NAME", "SECONDS"),
+                        help="store one measured run of a named long job; a declared command with that name (or "
+                             "\"job\": NAME) then uses these times instead of fallback_seconds")
+    parser.add_argument("--jobs", action="store_true", help="list the recorded jobs")
     args = parser.parse_args()
+    if args.record_job:
+        try:
+            row = record_job(args.record_job[0], float(args.record_job[1]))
+        except ValueError as exc:
+            parser.error(str(exc))
+        print(f"Recorded job '{row['name']}': {row['seconds']:.0f} s -> {jobs_path()}")
+        return
+    if args.jobs:
+        jobs = load_jobs()
+        for name, runs in sorted(jobs.items()):
+            print(f"{name}: n={len(runs)} | median {statistics.median(runs):.0f} s | newest {runs[-1]:.0f} s")
+        if not jobs:
+            print(f"No recorded jobs ({jobs_path()}).")
+        return
+    if not args.counts:
+        parser.error("give a counts JSON file (or - for stdin), --record-job or --jobs")
 
     counts = json.loads(sys.stdin.read() if args.counts == "-" else Path(args.counts).read_text(encoding="utf-8"))
     rates_path = cc_log.DATA_DIR / "rates.json"
@@ -357,7 +423,7 @@ def main() -> None:
     if not counts.get("start_context_tokens") and session["ctx"] and not counts.get("fresh_worker"):
         counts["start_context_tokens"] = session["ctx"]
     model, mr = pick_model(rates, counts["worker_model"])
-    res = simulate(counts, rates, mr, project)
+    res = simulate(counts, rates, mr, project, jobs=load_jobs())
     scored = scored_estimates()
     corr = correction(scored)
     floor = res["floor"]          # known waits: the self-correction shifts only the part around them
