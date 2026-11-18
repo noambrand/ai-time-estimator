@@ -16,6 +16,7 @@ MAX_SAMPLES = 400        # samples kept per bucket / command (keeps rates.json s
 MIN_MODEL_TURNS = 20
 MIN_SESSION_CALLS = 10   # a main session needs this many tool calls to give a seconds-per-call rate
 MIN_POOL_SAMPLES = 20    # shell runs needed before unmeasured commands draw from the measured pool
+RATES_FORMAT = 2         # rates.json written with an older format is recalibrated at once (autoscore.py)
 
 
 def median_or_none(values: list[float], min_n: int = 1) -> float | None:
@@ -200,7 +201,7 @@ def measure_rates(days: int, until: float = float("inf")) -> tuple[dict, Accumul
     for path in files:
         for name, stream in cc_log.load_streams(path, since, until).items():
             acc.add_stream(stream["cwd"], stream["events"], name == "main")
-    rates = acc.finish()
+    rates = {"format": RATES_FORMAT, **acc.finish()}      # first key: autoscore.py reads it from the file head
     rates.update({"generated": time.strftime("%Y-%m-%dT%H:%M:%S"), "days": days, "files": len(files)})
     return rates, acc, files
 

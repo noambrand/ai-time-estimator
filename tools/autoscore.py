@@ -5,13 +5,16 @@
 # Work done by a background agent is measured on that agent's own transcript (compare.resolve_window); an
 # estimate no window can measure is stored as unscored with its reason. A window that is still running is stored
 # as "open" and updated in place; once it closes the score is final and never redone. One log line when an
-# estimate is first scored and one when its status changes - no repeats. Also recalibrates stale rates.
+# estimate is first scored and one when its status changes - no repeats. Also recalibrates rates older than a
+# day (or written in an older format), one session at a time.
 # Silent and never fails the hook: all output goes to autoscore.log.
 from __future__ import annotations
 
 import contextlib
 import io
 import json
+import os
+import re
 import sys
 import time
 import traceback
@@ -20,7 +23,10 @@ from pathlib import Path
 import cc_log
 
 WINDOW_SECONDS = 24 * 3600     # estimates older than this are no longer looked for in a session
-RECALIBRATE_DAYS = 14
+# Calibrating takes about a minute of background CPU and the hook only runs while Claude Code is in use, so
+# a daily refresh is cheap and keeps new sessions (a new model or effort, new commands) in the rates.
+RECALIBRATE_DAYS = 1
+CALIBRATE_LOCK_SECONDS = 900   # another session's calibration younger than this is still running
 QUIET_SECONDS = 1800           # a session silent this long will not close an open window by itself
 SETTLED = ("final", "unscored", "invalid")
 
@@ -121,13 +127,36 @@ def log_line(row: dict, before: str | None) -> str | None:
     return f"{stamp} scored {row['estimate_id']}: actual {row['active_min']:.1f} min vs P50 {row['p50']:.1f}{note}"
 
 
+def rates_format(rates: Path) -> int:
+    """The "format" number at the head of rates.json (0 for files written before it existed)."""
+    try:
+        with rates.open(encoding="utf-8") as handle:
+            head = handle.read(200)
+    except OSError:
+        return 0
+    found = re.search(r'"format":\s*(\d+)', head)
+    return int(found.group(1)) if found else 0
+
+
 def recalibrate_if_stale(now: float) -> bool:
-    rates = cc_log.DATA_DIR / "rates.json"
-    if rates.exists() and now - rates.stat().st_mtime < RECALIBRATE_DAYS * 86400:
-        return False
+    """Measure the rates again when rates.json is a day old, missing, or written in an older format. Many
+    sessions stop at once: a lock file keeps it to one calibration at a time."""
     import calibrate
-    with contextlib.redirect_stdout(io.StringIO()), mock_argv(["calibrate.py"]):
-        calibrate.main()
+    rates = cc_log.DATA_DIR / "rates.json"
+    if (rates.exists() and now - rates.stat().st_mtime < RECALIBRATE_DAYS * 86400
+            and rates_format(rates) >= calibrate.RATES_FORMAT):
+        return False
+    lock = cc_log.DATA_DIR / "calibrating.lock"
+    if lock.exists() and now - lock.stat().st_mtime < CALIBRATE_LOCK_SECONDS:
+        return False
+    cc_log.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    lock.write_text(str(os.getpid()), encoding="utf-8")
+    try:
+        with contextlib.redirect_stdout(io.StringIO()), mock_argv(["calibrate.py"]):
+            calibrate.main()
+    finally:
+        with contextlib.suppress(OSError):
+            lock.unlink()
     return True
 
 
