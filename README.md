@@ -118,14 +118,24 @@ python ~/.claude/ai-time-estimator/backtest.py
 
 The backtest replays your past requests with their real tool calls. It measures rates on the older 80% of your requests and tests on the newest 20%, then reports how often the real time landed inside P10–P90.
 
-On the author's machine (97 held-out requests):
+On the author's machine (105 held-out requests, v1.2.0):
 
 | | inside P10–P90 | median actual ÷ P50 | median P50 error |
 |---|---|---|---|
-| per-call model only | 55% | 0.58 | 81% |
-| with the measured speed spread | **85%** (target 80%) | 0.60 | 76% |
+| per-call model only | 55% | 0.61 | 76% |
+| with the measured speed spread | **87%** (target 80%) | 0.60 | 75% |
 
-A single request varies a lot, even when its tool calls are known exactly, so trust the range more than the middle number: the middle number runs high (half the real times were under 0.6 × P50). The backtest checks the time model only; how well the agent counts the work is what the automatic scoring and the self-correction track.
+By the size of the estimate (with the speed spread):
+
+| P50 | requests | inside P10–P90 | real time above P90 |
+|---|---|---|---|
+| under 5 min | 58 | 93% | 5% |
+| 5–20 min | 35 | 86% | 0% |
+| over 20 min | 12 | 58% | 33% |
+
+A single request varies a lot, even when its tool calls are known exactly, so trust the range more than the middle number: the middle number runs high (half the real times were under 0.6 × P50). Long jobs are the weakest: a third of the over-20-minute requests ran past the top of the range, because one slow step moves the whole job. The backtest checks the time model only; how well the agent counts the work is what the automatic scoring and the self-correction track.
+
+What v1.2 changed is mostly what is measured and scored (background work, known waits, agent transcripts, fresher rates), so the replay above moved little from v1.1 (85% → 87% inside the range). The improvement shows in your own track record, which no longer counts waiting time as work. Your own numbers need 10 scored estimates before the ranges correct themselves, so the track record on a new install is thin at first.
 
 ## Privacy
 
