@@ -54,7 +54,8 @@ For each scenario, write the worker's tool calls as a short numbered list, then 
 | read_lines | lines read into context |
 | fix_loops | failed verification → fix → re-run cycles |
 | runs | runs of each shell command on the happy path. Do not also count fix-loop re-runs here |
-| tools | every other tool by its exact name: `Agent` (a subagent; agents launched together in one turn run in parallel, so count them as one `Agent` call), `Workflow`, `WebFetch`, `WebSearch`, MCP tools... Also task-list bookkeeping (`TaskCreate`, `TaskUpdate`, `TodoWrite`, `ToolSearch`) when the worker's instructions (`~/.claude/CLAUDE.md`, project CLAUDE.md) require a task list: about 1 create + 2 updates per step, plus 1 `ToolSearch` if the task tools are deferred |
+| tools | every other tool by its exact name: `Agent` (a subagent the worker waits for; agents launched together in one turn run in parallel, so count them as one `Agent` call), `Workflow`, `WebFetch`, `WebSearch`, MCP tools... Also task-list bookkeeping (`TaskCreate`, `TaskUpdate`, `TodoWrite`, `ToolSearch`) when the worker's instructions (`~/.claude/CLAUDE.md`, project CLAUDE.md) require a task list: about 1 create + 2 updates per step, plus 1 `ToolSearch` if the task tools are deferred |
+| background | work the worker starts and does not wait for: a background agent, a background shell command (`run_in_background`), a workflow or monitor. Key = the tool name, or a command listed in `commands`. It costs only its launch in the estimate; its run time is shown as a separate wall-clock line |
 
 Use plain numbers inside a scenario. The difference between the scenarios is the uncertainty.
 
@@ -87,6 +88,9 @@ EOF
 - Leave out `worker_model`, `worker_effort` and `start_context_tokens`: estimate.py reads the model, reasoning effort and current context size of the session that asked (newest transcript of this project). Set them only when the work runs elsewhere; for a brand-new session set `"fresh_worker": true`.
 - Every command in `runs` must also be listed in `commands`. Mark the one that gets re-run after a failure with `"verify": true`.
 - `fallback_seconds` is used only when a command or tool was never measured on this machine. The script flags it as UNMEASURED.
+- A command whose duration is already known gets `"fixed_seconds": N` (a timed wait), or `"remaining_seconds": N` for a job that is already running. It is added as a constant, so the range never drops below it.
+- A long job recorded with `estimate.py --record-job NAME SECONDS` is used when a command is named `NAME` or carries `"job": "NAME"`. The script flags it as MEASURED.
+- When a background agent does the work, set `"worker": "agent:<name>"` (the name or description it is launched with), so the score is taken from that agent's own transcript. Work spread over several sessions or days gets `"worker": "multi_session"`; it is not scored automatically.
 
 ## Step 4 — Challenge, then rerun if a scenario changes
 

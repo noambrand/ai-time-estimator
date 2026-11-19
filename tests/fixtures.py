@@ -82,9 +82,10 @@ class Transcript:
             self._add(obj, dur / chunks)
         return self.t
 
-    def result(self, tool: dict, gap: float = 1.0, error: bool = False, text: str = "ok") -> float:
+    def result(self, tool: dict, gap: float = 1.0, error: bool = False, text: str = "ok", **line) -> float:
+        """A tool result. `line` adds top-level fields Claude Code writes on the line (permissionDecision...)."""
         block = {"type": "tool_result", "tool_use_id": tool["id"], "is_error": error, "content": text}
-        return self._add({"type": "user", "message": {"role": "user", "content": [block]}}, gap)
+        return self._add(dict({"type": "user", "message": {"role": "user", "content": [block]}}, **line), gap)
 
     def write(self, path: Path, partial_tail: bool = False) -> Path:
         path.parent.mkdir(parents=True, exist_ok=True)

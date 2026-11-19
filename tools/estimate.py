@@ -1,6 +1,8 @@
-# [UPDATED v1.4] estimate.py - turn the time-estimator's scenarios (operation counts) into
+# [UPDATED v1.5] estimate.py - turn the time-estimator's scenarios (operation counts) into
 # P10/P50/P90 wall-clock minutes, using the rates measured by calibrate.py.
 # Usage: python estimate.py counts.json      or      python estimate.py - < counts.json
+#        python estimate.py --record-job NAME SECONDS   (a measured run of a named long job, kept in jobs.jsonl)
+#        python estimate.py --jobs                      (the recorded jobs)
 from __future__ import annotations
 
 import argparse
@@ -25,9 +27,12 @@ FALLBACK_TOKENS_PER_LINE = 12    # used until the logs hold 5+ large writes
 FALLBACK_QUICK_SECONDS = 0.5     # Read/Grep/Edit with no measurement
 FALLBACK_OTHER_SECONDS = 10      # any other tool with no measurement and no fallback_seconds
 FALLBACK_COMMAND_SECONDS = 30
+FALLBACK_LAUNCH_SECONDS = 1.0    # starting background work, until the logs hold 3+ measured launches
 MIN_SCORED = 10                  # scored estimates needed before shown ranges correct themselves
 RECENT_SCORED = 20               # the correction learns from the newest scored estimates only
 TARGET_INSIDE = 0.8              # share of real times a P10-P90 range should hold
+RECENT_JOB_RUNS = 20             # the newest recorded runs of a named job are its samples
+SPREAD_ON_COMMANDS = True        # scale measured shell-command samples too: the backtest holds 84% inside P10-P90 with it, 67% without
 
 
 def measured(value, fallback):
@@ -64,14 +69,22 @@ def expected_scenario(scenarios: list[dict]) -> dict:
     return max(scenarios, key=lambda s: s["weight"])
 
 
-def likely_counts(scenario: dict) -> dict:
+def command_names(counts: dict) -> set:
+    """The shell commands an input declares (a `background` entry named like one is a command, else a tool)."""
+    return {c["cmd"] for c in counts.get("commands", [])}
+
+
+def likely_counts(scenario: dict, commands: set = frozenset()) -> dict:
     """Comparable counts of one scenario (likely values), same fields compare.py measures."""
     lk = lambda v: as_range(v)[1]
     out = {f: lk(scenario.get(f, 0)) for f in ("reads", "searches", "edits", "fix_loops", "write_lines")}
     tools = scenario.get("tools", {})
+    background = scenario.get("background", {})
     out["bookkeeping"] = sum(lk(v) for k, v in tools.items() if k in cc_log.BOOKKEEPING_TOOLS)
-    out["other_calls"] = sum(lk(v) for k, v in tools.items() if k not in cc_log.BOOKKEEPING_TOOLS)
-    out["commands"] = sum(lk(v) for v in scenario.get("runs", {}).values()) + out["fix_loops"]
+    out["other_calls"] = (sum(lk(v) for k, v in tools.items() if k not in cc_log.BOOKKEEPING_TOOLS)
+                          + sum(lk(v) for k, v in background.items() if k not in commands))
+    out["commands"] = (sum(lk(v) for v in scenario.get("runs", {}).values()) + out["fix_loops"]
+                       + sum(lk(v) for k, v in background.items() if k in commands))
     return out
 
 
@@ -105,13 +118,21 @@ def turn_sampler(model_rates: dict, bucket_tokens: int):
     return sample, usable
 
 
-def command_samples(rates: dict, project: str, command: str, fallback: float) -> tuple[list[float], str]:
+def command_samples(rates: dict, project: str, command: str, fallback: float | None) -> tuple[list[float], str]:
+    """Measured run times of this command. Never measured: the caller's fallback_seconds, else the measured runs
+    of all read-only (or all other) commands, else FALLBACK_COMMAND_SECONDS."""
     for key in cc_log.command_keys(command):
         for scope in (project, "*"):
             found = rates["commands"].get(scope, {}).get(key)
             if found:
                 return found, ("this project" if scope == project else "other projects") + f": '{key}' n={len(found)}"
-    return [float(fallback)], "UNMEASURED (fallback_seconds)"
+    if fallback is not None:
+        return [float(fallback)], "UNMEASURED (fallback_seconds)"
+    kind = "quick" if cc_log.is_quick_command(command) else "other"
+    pool = rates.get("command_pools", {}).get(kind)
+    if pool:
+        return pool, f"UNMEASURED: drawn from {len(pool)} measured {'read-only' if kind == 'quick' else 'other'} commands"
+    return [float(FALLBACK_COMMAND_SECONDS)], f"UNMEASURED (default {FALLBACK_COMMAND_SECONDS} s)"
 
 
 def tool_samples(rates: dict, name: str, fallback: float) -> tuple[list[float], str]:
@@ -120,6 +141,49 @@ def tool_samples(rates: dict, name: str, fallback: float) -> tuple[list[float], 
         if len(found) >= MIN_TOOL_SAMPLES:
             return found, f"measured '{candidate}' n={rates['tools'][candidate]['n']}"
     return [float(fallback)], "UNMEASURED (fallback_seconds)"
+
+
+def fixed_seconds(command: dict):
+    """The known duration of a declared command (fixed_seconds, or remaining_seconds for a job already running)."""
+    value = command.get("fixed_seconds", command.get("remaining_seconds"))
+    return None if value is None else float(value)
+
+
+def jobs_path() -> Path:
+    return cc_log.DATA_DIR / "jobs.jsonl"
+
+
+def record_job(name: str, seconds: float) -> dict:
+    """Append one measured run of a named long job (a test suite, a corpus run, a release build...)."""
+    if not name.strip() or seconds <= 0:
+        raise ValueError("a job needs a name and a positive number of seconds")
+    row = {"name": name.strip(), "seconds": round(float(seconds), 1), "ts": time.time()}
+    cc_log.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    with open(jobs_path(), "a", encoding="utf-8") as out:
+        out.write(json.dumps(row) + "\n")
+    return row
+
+
+def load_jobs() -> dict[str, list[float]]:
+    """{job name (lower case): the newest RECENT_JOB_RUNS recorded seconds}."""
+    path = jobs_path()
+    runs: dict[str, list[float]] = {}
+    if path.exists():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                row = json.loads(line)
+                runs.setdefault(str(row["name"]).strip().lower(), []).append(float(row["seconds"]))
+            except (ValueError, KeyError, TypeError):
+                continue
+    return {k: v[-RECENT_JOB_RUNS:] for k, v in runs.items()}
+
+
+def job_of(command: dict, jobs: dict) -> str | None:
+    """The recorded job a declared command runs: its "job" field, or a command named exactly like a job."""
+    for name in (command.get("job"), command.get("cmd")):
+        if name and str(name).strip().lower() in jobs:
+            return str(name).strip().lower()
+    return None
 
 
 def speed_factor(rng: random.Random, spread: dict, minutes: float) -> float:
@@ -135,7 +199,7 @@ def quick_seconds(rates: dict, names: set[str]) -> float:
     return statistics.median(vals) if vals else FALLBACK_QUICK_SECONDS
 
 
-def simulate(counts: dict, rates: dict, mr: dict, project: str, n: int = SIMULATIONS) -> dict:
+def simulate(counts: dict, rates: dict, mr: dict, project: str, n: int = SIMULATIONS, jobs: dict | None = None) -> dict:
     rng = random.Random(1)
     turn_rates, effort_note = effort_rates(mr, counts.get("worker_effort", ""))
     sample_turn, usable = turn_sampler(turn_rates, rates["bucket_tokens"])
@@ -143,10 +207,24 @@ def simulate(counts: dict, rates: dict, mr: dict, project: str, n: int = SIMULAT
     notes = [effort_note]
 
     declared_cmds = {c["cmd"]: c for c in counts.get("commands", [])}
+    bg_names = {k for s in scenarios for k in s.get("background", {})}
     cmd_names = set(declared_cmds) | {k for s in scenarios for k in s.get("runs", {})}
     cmd_samples = {}
+    # A known wait (a timed sleep, the time left on a job already running) is a constant: never sampled, never
+    # scaled by the speed spread, so P10 cannot fall below it.
+    fixed = {cmd: float(fixed_seconds(c)) for cmd, c in declared_cmds.items() if fixed_seconds(c) is not None}
     for cmd in sorted(cmd_names):
-        fallback = declared_cmds.get(cmd, {}).get("fallback_seconds", FALLBACK_COMMAND_SECONDS)
+        if cmd in fixed:
+            cmd_samples[cmd] = [fixed[cmd]]
+            notes.append(f"command '{cmd}': KNOWN WAIT {fixed[cmd]:.0f} s per run (a floor, not scaled)")
+            continue
+        job = job_of(declared_cmds.get(cmd, {"cmd": cmd}), jobs or {})
+        if job:
+            cmd_samples[cmd] = jobs[job]
+            notes.append(f"command '{cmd}': MEASURED job '{job}' n={len(jobs[job])} "
+                         f"(median {statistics.median(jobs[job]):.0f} s, from jobs.jsonl)")
+            continue
+        fallback = declared_cmds.get(cmd, {}).get("fallback_seconds")
         cmd_samples[cmd], source = command_samples(rates, project, cmd, fallback)
         notes.append(f"command '{cmd}': {source}")
     verify = next((cmd for cmd, c in declared_cmds.items() if c.get("verify")), None)
@@ -154,9 +232,13 @@ def simulate(counts: dict, rates: dict, mr: dict, project: str, n: int = SIMULAT
     declared_tools = {t["tool"]: t.get("fallback_seconds", FALLBACK_OTHER_SECONDS) for t in counts.get("tools", [])}
     tool_names = {k for s in scenarios for k in s.get("tools", {})}
     other_samples = {}
-    for name in sorted(tool_names):
+    for name in sorted(tool_names | (bg_names - set(declared_cmds))):
         other_samples[name], source = tool_samples(rates, name, declared_tools.get(name, FALLBACK_OTHER_SECONDS))
-        notes.append(f"tool '{name}': {source}")
+        notes.append(("tool" if name in tool_names else "background tool") + f" '{name}': {source}")
+    # Background work (a background command, an agent launched in the background...): the session only spends
+    # the launch on it; its run time goes to a separate wall-clock figure, not into the AI time.
+    bg_samples = {k: cmd_samples[k] if k in declared_cmds else other_samples[k] for k in bg_names}
+    launch_s = measured(rates.get("background_launch_seconds"), FALLBACK_LAUNCH_SECONDS)
 
     t_read = quick_seconds(rates, cc_log.READ_TOOLS)
     t_search = quick_seconds(rates, cc_log.SEARCH_TOOLS)
@@ -179,27 +261,42 @@ def simulate(counts: dict, rates: dict, mr: dict, project: str, n: int = SIMULAT
         d = {f: draw(rng, s.get(f, 0)) for f in COUNT_FIELDS}
         runs = {k: draw(rng, v) for k, v in s.get("runs", {}).items()}
         tools = {k: draw(rng, v) for k, v in s.get("tools", {}).items()}
+        bg = {k: draw(rng, v) for k, v in s.get("background", {}).items()}
         calls = (d["reads"] + d["searches"] + d["edits"] + sum(runs.values()) + sum(tools.values())
-                 + d["fix_loops"] * (loop_calls + 1))
+                 + sum(bg.values()) + d["fix_loops"] * (loop_calls + 1))
         turns = math.ceil(calls / mr["calls_per_turn"]) + 1
         write_tokens = d["write_lines"] * tpl
         step = max(growth, (d["read_lines"] * READ_TOKENS_PER_LINE + write_tokens) / turns)
         model_s = sum(sample_turn(rng, start_ctx + i * step) for i in range(turns))
         tool_s = (d["reads"] * t_read + d["searches"] * t_search + d["edits"] * t_edit
                   + d["fix_loops"] * loop_calls * t_edit
-                  + sum(rng.choice(other_samples[k]) for k, n in tools.items() for _ in range(n)))
-        cmd_s = sum(rng.choice(cmd_samples[k]) for k, n in runs.items() for _ in range(n))
-        if verify:
+                  + sum(rng.choice(other_samples[k]) for k, n in tools.items() for _ in range(n))
+                  + sum(bg.values()) * launch_s)
+        cmd_s = sum(rng.choice(cmd_samples[k]) for k, n in runs.items() if k not in fixed for _ in range(n))
+        fixed_s = sum(fixed[k] * n for k, n in runs.items() if k in fixed)
+        if verify in fixed:
+            fixed_s += fixed[verify] * d["fix_loops"]
+        elif verify:
             cmd_s += sum(rng.choice(cmd_samples[verify]) for _ in range(d["fix_loops"]))
         write_s = max(0.0, write_tokens - d["edits"] * typical_out) / tps if tps else 0.0
         raw = model_s + tool_s + cmd_s + write_s
-        # One measured speed factor per run: real requests are fast or slow as a whole.
-        factor = speed_factor(rng, spread, raw / 60) if spread else 1.0
-        sims.append({"total": raw * factor, "model": model_s, "tools": tool_s,
-                     "commands": cmd_s, "writes": write_s, "turns": turns, "scenario": si})
+        # One measured speed factor per run: real requests are fast or slow as a whole. Known waits come after it.
+        factor = speed_factor(rng, spread, raw / 60) if spread else 1.0     # band by the part it scales
+        scaled = raw if SPREAD_ON_COMMANDS else raw - cmd_s
+        total = scaled * factor + (raw - scaled) + fixed_s
+        # Background jobs run side by side: the last result comes when the longest one ends.
+        bg_s = max((rng.choice(bg_samples[k]) for k, n in bg.items() for _ in range(n)), default=0.0)
+        sims.append({"total": total, "wall": max(total, bg_s), "model": model_s, "tools": tool_s,
+                     "commands": cmd_s + fixed_s, "writes": write_s, "turns": turns, "scenario": si,
+                     "fixed": fixed_s})
 
-    totals = sorted(r["total"] for r in sims)
-    pct = {q: totals[int(q / 100 * (len(totals) - 1))] / 60 for q in (10, 50, 90)}
+    def percentiles(key: str) -> dict:
+        values = sorted(r[key] for r in sims)
+        return {q: values[int(q / 100 * (len(values) - 1))] / 60 for q in (10, 50, 90)}
+
+    pct = percentiles("total")
+    wall = percentiles("wall") if bg_names else None
+    floor = min(r["fixed"] for r in sims) / 60
     med = {k: statistics.median(r[k] for r in sims) for k in ("model", "tools", "commands", "writes", "turns")}
     by_scenario = []
     for i, s in enumerate(scenarios):
@@ -217,13 +314,20 @@ def simulate(counts: dict, rates: dict, mr: dict, project: str, n: int = SIMULAT
 
     # Simple baseline: likely tool calls of the main scenario x measured all-in seconds per call.
     # compare.py --report shows whether the full model beats it; if not, the simulation is not worth keeping.
-    exp = likely_counts(expected_scenario(scenarios))
+    exp = likely_counts(expected_scenario(scenarios), set(declared_cmds))
     likely_calls = (exp["reads"] + exp["searches"] + exp["edits"] + exp["other_calls"] + exp["bookkeeping"] + exp["commands"]
                     + exp["fix_loops"] * loop_calls)
     spc = mr.get("seconds_per_call")
-    return {"p10": pct[10], "p50": pct[50], "p90": pct[90], "median_parts": med, "notes": notes,
+    return {"p10": pct[10], "p50": pct[50], "p90": pct[90], "wall": wall, "floor": floor,
+            "median_parts": med, "notes": notes,
             "by_scenario": by_scenario, "baseline": likely_calls * spc / 60 if spc else None,
             "likely_calls": likely_calls, "seconds_per_call": spc}
+
+
+def is_final(row: dict) -> bool:
+    """A scored estimate the self-correction, the track record and compare.py --report may use: measured on a
+    closed window and not marked invalid. Rows written before row statuses existed count as final."""
+    return row.get("status", "final") == "final" and "active_min" in row
 
 
 def scored_estimates() -> list[dict]:
@@ -250,7 +354,7 @@ def correction(rows: list[dict]) -> dict | None:
     """Learned from the newest scored estimates: shift = median real/predicted time; width = the smallest
     log-space widening (or narrowing) of the model's range that would have held ~80% of those real times.
     Measured from this machine's own results, not a safety factor."""
-    rows = [r for r in rows if r.get("active_min", 0) > 0 and raw_of(r, "p50") > 0][-RECENT_SCORED:]
+    rows = [r for r in rows if is_final(r) and r["active_min"] > 0 and raw_of(r, "p50") > 0][-RECENT_SCORED:]
     if len(rows) < MIN_SCORED:
         return None
     shift = statistics.median(r["active_min"] / raw_of(r, "p50") for r in rows)
@@ -271,7 +375,7 @@ def corrected(p10: float, p50: float, p90: float, corr: dict) -> tuple[float, fl
 
 
 def track_record(rows: list[dict]) -> str:
-    rows = [r for r in rows if "active_min" in r]
+    rows = [r for r in rows if is_final(r)]
     if not rows:
         return "no scored estimates yet"
     inside = sum(r["p10"] <= r["active_min"] <= r["p90"] for r in rows)
@@ -280,8 +384,28 @@ def track_record(rows: list[dict]) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="P10/P50/P90 AI execution time from operation-count scenarios.")
-    parser.add_argument("counts", help="counts JSON file, or - for stdin")
+    parser.add_argument("counts", nargs="?", help="counts JSON file, or - for stdin")
+    parser.add_argument("--record-job", nargs=2, metavar=("NAME", "SECONDS"),
+                        help="store one measured run of a named long job; a declared command with that name (or "
+                             "\"job\": NAME) then uses these times instead of fallback_seconds")
+    parser.add_argument("--jobs", action="store_true", help="list the recorded jobs")
     args = parser.parse_args()
+    if args.record_job:
+        try:
+            row = record_job(args.record_job[0], float(args.record_job[1]))
+        except ValueError as exc:
+            parser.error(str(exc))
+        print(f"Recorded job '{row['name']}': {row['seconds']:.0f} s -> {jobs_path()}")
+        return
+    if args.jobs:
+        jobs = load_jobs()
+        for name, runs in sorted(jobs.items()):
+            print(f"{name}: n={len(runs)} | median {statistics.median(runs):.0f} s | newest {runs[-1]:.0f} s")
+        if not jobs:
+            print(f"No recorded jobs ({jobs_path()}).")
+        return
+    if not args.counts:
+        parser.error("give a counts JSON file (or - for stdin), --record-job or --jobs")
 
     counts = json.loads(sys.stdin.read() if args.counts == "-" else Path(args.counts).read_text(encoding="utf-8"))
     rates_path = cc_log.DATA_DIR / "rates.json"
@@ -299,19 +423,23 @@ def main() -> None:
     if not counts.get("start_context_tokens") and session["ctx"] and not counts.get("fresh_worker"):
         counts["start_context_tokens"] = session["ctx"]
     model, mr = pick_model(rates, counts["worker_model"])
-    res = simulate(counts, rates, mr, project)
+    res = simulate(counts, rates, mr, project, jobs=load_jobs())
     scored = scored_estimates()
     corr = correction(scored)
-    p10, p50, p90 = corrected(res["p10"], res["p50"], res["p90"], corr) if corr else (res["p10"], res["p50"], res["p90"])
+    floor = res["floor"]          # known waits: the self-correction shifts only the part around them
+    p10, p50, p90 = (tuple(floor + p for p in corrected(res["p10"] - floor, res["p50"] - floor, res["p90"] - floor, corr))
+                     if corr else (res["p10"], res["p50"], res["p90"]))
 
     est_id = "E" + time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:3]  # unique even within one second
     record = {"id": est_id, "ts": time.time(), "project": project, "model": model,
+              "worker": counts.get("worker", "session"),
               "effort": counts.get("worker_effort", ""), "task": counts.get("task", ""),
               "task_type": counts.get("task_type", "other"), "counts": counts,
               "p10": round(p10, 2), "p50": round(p50, 2), "p90": round(p90, 2),
               "raw_p10": round(res["p10"], 2), "raw_p50": round(res["p50"], 2), "raw_p90": round(res["p90"], 2),
               "correction": corr,
               "median_turns": res["median_parts"]["turns"], "rates_generated": rates.get("generated"),
+              "wall": {f"p{q}": round(v, 2) for q, v in res["wall"].items()} if res["wall"] else None,
               "baseline": round(res["baseline"], 2) if res["baseline"] else None}
     with open(cc_log.DATA_DIR / "estimates.jsonl", "a", encoding="utf-8") as log:
         log.write(json.dumps(record) + "\n")
@@ -320,6 +448,10 @@ def main() -> None:
     print(f"Estimate {est_id} | worker {model} at effort {record['effort'] or 'unknown'} | {SIMULATIONS} simulated runs"
           f" | rates from {rates.get('generated')}")
     print(f"P10 {p10:.1f} min | P50 {p50:.1f} min | P90 {p90:.1f} min")
+    if res["wall"]:
+        w = res["wall"]
+        print(f"Wall clock until the last background result: P10 {w[10]:.1f} | P50 {w[50]:.1f} | P90 {w[90]:.1f} min"
+              " (background work runs on its own; the AI time above counts only its launch)")
     if corr:
         print(f"Corrected from the last {corr['n']} scored estimates (real/predicted x{corr['shift']:.2f}, range "
               f"x{corr['width']:.2f}). Model alone: P10 {res['p10']:.1f} | P50 {res['p50']:.1f} | P90 {res['p90']:.1f} min")

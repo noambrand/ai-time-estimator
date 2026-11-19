@@ -1,4 +1,4 @@
-# [UPDATED v1.6] calibrate.py - measure unit rates (seconds per model turn, per tool, per command)
+# [UPDATED v1.7] calibrate.py - measure unit rates (seconds per model turn, per tool, per command)
 # from your own Claude Code transcripts. Read-only. Writes ~/.claude/ai-time-estimator/rates.json
 from __future__ import annotations
 
@@ -15,6 +15,8 @@ BUCKET_TOKENS = 25_000   # context-size bucket width for turn latency
 MAX_SAMPLES = 400        # samples kept per bucket / command (keeps rates.json small)
 MIN_MODEL_TURNS = 20
 MIN_SESSION_CALLS = 10   # a main session needs this many tool calls to give a seconds-per-call rate
+MIN_POOL_SAMPLES = 20    # shell runs needed before unmeasured commands draw from the measured pool
+RATES_FORMAT = 2         # rates.json written with an older format is recalibrated at once (autoscore.py)
 
 
 def median_or_none(values: list[float], min_n: int = 1) -> float | None:
@@ -34,6 +36,10 @@ class Accumulator:
         self.tools: dict[str, list[float]] = defaultdict(list)
         self.commands: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
         self.loops: list[int] = []
+        self.launches: list[float] = []          # seconds the session spent starting background work
+        # Every accepted shell run, split into read-only quick commands and the rest: estimate.py draws an
+        # unmeasured command's time from these instead of one flat guess.
+        self.command_pools: dict[str, list[float]] = defaultdict(list)
         self.turns_seen = 0
         self.turns_with_usage = 0
 
@@ -52,12 +58,18 @@ class Accumulator:
         # Workflow, background Bash...): then its result only says "launched", and the real end is the later
         # completion notice that names its tool_use_id, or - for a named agent - its first message back
         # ("teammate_id" = the name it was launched with). So results wait here until the stream ends.
-        finished: dict[str, tuple[tuple, float]] = {}
+        # The run time of background work is a real sample of that tool or command (a build takes as long in the
+        # background), but the session only spends the launch on it: session rates count the launch, not the run.
+        finished: dict[str, tuple[tuple, float, dict]] = {}
         named: dict[str, str] = {}               # agent name -> tool_use_id of its latest launch
 
-        def record(item: tuple, dur: float) -> None:
+        def record(item: tuple, dur: float | None, res: dict, active: float | None = None) -> None:
+            kept = self.add_tool_time(project, item, dur, res) if dur is not None else 0.0
             tool_s = session[item[3]]["tool_max"]
-            tool_s[item[4]] = max(tool_s[item[4]], self.add_tool_time(project, item, dur))
+            tool_s[item[4]] = max(tool_s[item[4]], kept if active is None else active)
+
+        def launch_seconds(dur: float) -> float:
+            return dur if 0 <= dur <= cc_log.QUICK_TOOL_MAX_SECONDS else 0.0
 
         for ev in events:
             if ev["kind"] == "turn":
@@ -97,29 +109,38 @@ class Accumulator:
                     tracker.on_result(res["id"], res["error"], res.get("text", ""))
                     item = pending.pop(res["id"], None)
                     if item:
-                        finished[res["id"]] = (item, ev["ts"] - item[1])
+                        finished[res["id"]] = (item, ev["ts"] - item[1], res)
+                        if res.get("launched") or item[2].get("run_in_background"):
+                            self.launches.append(launch_seconds(ev["ts"] - item[1]))
             elif ev["kind"] == "system":
                 tool_id = ev.get("tool_use_id") or named.pop(ev.get("teammate") or "", None)
                 if tool_id in finished:
-                    item, _ = finished.pop(tool_id)
-                    record(item, ev["ts"] - item[1])    # background work: launch -> notice or first reply
-        for item, dur in finished.values():
-            record(item, dur)
+                    item, launch, res = finished.pop(tool_id)
+                    # background work: runs launch -> notice or first reply; the session spent the launch
+                    record(item, ev["ts"] - item[1], res, active=launch_seconds(launch))
+        for item, dur, res in finished.values():
+            if res.get("launched") or item[2].get("run_in_background"):
+                record(item, None, res, active=launch_seconds(dur))   # no notice in this stream: run time unknown
+            else:
+                record(item, dur, res)
         if is_main:  # subagent time is already inside the main session's Agent/Task calls
             for name, s in session.items():
                 if s["calls"] >= MIN_SESSION_CALLS:
                     self.models[name]["session_rates"].append((s["turn_s"] + sum(s["tool_max"].values())) / s["calls"])
 
-    def add_tool_time(self, project: str, item: tuple, dur: float) -> float:
-        """Store one tool duration; returns the seconds accepted (0 when filtered out)."""
+    def add_tool_time(self, project: str, item: tuple, dur: float, res: dict | None = None) -> float:
+        """Store one tool duration; returns the seconds accepted (0 when filtered out). A call whose
+        permission prompt a person answered, or that was denied and never ran, is no run time."""
         name, _, inp = item[:3]
-        limit = cc_log.QUICK_TOOL_MAX_SECONDS if name in cc_log.INSTANT_TOOLS else cc_log.LONG_TOOL_MAX_SECONDS
-        if dur < 0 or dur > limit or name in cc_log.HUMAN_TOOLS:
+        quick = cc_log.is_instant({"name": name, "input": inp})
+        limit = cc_log.QUICK_TOOL_MAX_SECONDS if quick else cc_log.LONG_TOOL_MAX_SECONDS
+        if dur < 0 or dur > limit or name in cc_log.HUMAN_TOOLS or (res and (res.get("prompted") or res.get("denied"))):
             return 0.0
         if name == "Bash":
             for key in cc_log.command_keys(inp.get("command", "")):
                 self.commands[project][key].append(dur)
                 self.commands["*"][key].append(dur)
+            self.command_pools["quick" if quick else "other"].append(dur)
         else:
             self.tools[name].append(dur)  # every tool keeps its own times: Task/Agent, WebFetch, MCP...
         return dur
@@ -165,6 +186,9 @@ class Accumulator:
             "commands": {p: {k: keep_sample(v, rng) for k, v in cmds.items() if len(v) >= 2}
                          for p, cmds in self.commands.items()},
             "fix_loop_calls": {"n": len(self.loops), "median": median_or_none(self.loops, 5)},
+            "background_launch_seconds": median_or_none(self.launches, 3),
+            "command_pools": {k: keep_sample(v, rng) for k, v in sorted(self.command_pools.items())
+                              if len(v) >= MIN_POOL_SAMPLES},
         }
 
 
@@ -177,7 +201,7 @@ def measure_rates(days: int, until: float = float("inf")) -> tuple[dict, Accumul
     for path in files:
         for name, stream in cc_log.load_streams(path, since, until).items():
             acc.add_stream(stream["cwd"], stream["events"], name == "main")
-    rates = acc.finish()
+    rates = {"format": RATES_FORMAT, **acc.finish()}      # first key: autoscore.py reads it from the file head
     rates.update({"generated": time.strftime("%Y-%m-%dT%H:%M:%S"), "days": days, "files": len(files)})
     return rates, acc, files
 

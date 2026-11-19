@@ -1,4 +1,4 @@
-# [UPDATED v1.6] cc_log.py - shared Claude Code transcript parsing for the AI time estimator
+# [UPDATED v1.7] cc_log.py - shared Claude Code transcript parsing for the AI time estimator
 # Parsing rules follow dioptx/cctime: merge streamed assistant chunks by requestId,
 # keep the usage with the highest output_tokens, tool time = tool_use -> tool_result gap.
 from __future__ import annotations
@@ -22,9 +22,13 @@ SEARCH_TOOLS = {"Grep", "Glob", "LS"}
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 QUICK_TOOLS = READ_TOOLS | SEARCH_TOOLS | EDIT_TOOLS
 BOOKKEEPING_TOOLS = {"TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "TodoWrite", "ToolSearch"}  # no project work
+# Claude Code's own coordination tools: messages, agent lists, stopping a task, loading a skill. They return at
+# once, yet about a quarter of their logged calls took minutes (a queued call, a slow hook), not work.
+COORDINATION_TOOLS = {"SendMessage", "ListAgents", "TaskStop", "TaskOutput", "KillShell", "BashOutput", "Skill",
+                      "SubagentHandback", "EnterWorktree", "ExitWorktree", "CronCreate", "CronList", "CronDelete"}
 # Tools that take well under a second: a longer gap means they waited (approval, a blocked teammate, a
-# stall), so their samples are capped at QUICK_TOOL_MAX_SECONDS.
-INSTANT_TOOLS = QUICK_TOOLS | BOOKKEEPING_TOOLS
+# stall), so their samples are capped at QUICK_TOOL_MAX_SECONDS and compare.py counts the gap as a wait.
+INSTANT_TOOLS = QUICK_TOOLS | BOOKKEEPING_TOOLS | COORDINATION_TOOLS
 TOOL_ALIASES = {"Task": "Agent", "Agent": "Task"}  # the subagent tool was renamed between versions
 RESULT_TEXT_CHARS = 3000     # tail of each tool result kept, to spot failures a pipe hid from the exit code
 
@@ -45,6 +49,23 @@ MASKED_STATUS = re.compile(r"(?<!\|)\|(?!\|)|;|\|\|")
 FAILURE_MARKERS = re.compile(
     r"Traceback \(most recent call last\)|^FAILED\b|\bFAILED \(|^--- FAIL|^FAIL\b|\b[1-9]\d* (?:failed|failing)\b"
     r"|npm ERR!|\berror(?:\[E\d+\]| TS\d+)?: |^\w*Error: |^Exit code [1-9]", re.MULTILINE)
+
+# Read-only shell utilities that finish in well under a second. A command made only of such steps that took
+# longer than QUICK_TOOL_MAX_SECONDS waited (an approval, a queued call, a slow hook), like a slow Read does.
+QUICK_COMMAND_WORDS = {"ls", "dir", "cat", "head", "tail", "wc", "grep", "egrep", "fgrep", "rg", "sed", "awk", "cut",
+                       "sort", "uniq", "tr", "nl", "column", "file", "stat", "find", "echo", "printf", "pwd", "which",
+                       "type", "basename", "dirname", "realpath", "readlink", "date", "diff", "cmp", "test", "[", "true"}
+QUICK_GIT_SUBCOMMANDS = {"status", "log", "diff", "show", "branch", "rev-parse", "ls-files", "ls-tree", "blame",
+                         "remote", "tag", "describe", "shortlog", "cat-file", "config", "reflog", "merge-base", "grep"}
+QUOTED = re.compile(r'"(?:\\.|[^"\\])*"|\'[^\']*\'')
+HEREDOC = re.compile(r"<<-?\s*['\"]?(\w+)['\"]?[^\n]*\n.*?\n\1\b", re.DOTALL)
+# A person answered a permission prompt for this call ("source" of the permissionDecision Claude Code writes on
+# the tool_result line): the gap holds their reply time. "user_permanent" is a rule the user saved earlier.
+PROMPTED_SOURCES = {"user_temporary", "user_reject"}
+# The tool_result of a call that started background work (a background command, an async or named agent, a
+# workflow, a monitor). The session is free at once; the work ends at a later completion notice.
+LAUNCH_RESULT = re.compile(r"\s*(?:Command running in background|Async agent launched|Spawned successfully|"
+                           r"Fork started|Workflow launched in background|Monitor started)", re.IGNORECASE)
 
 
 def parse_ts(text: str) -> float:
@@ -74,12 +95,35 @@ def tool_category(name: str) -> str:
     return "other_calls"
 
 
-def result_text(block: dict) -> str:
-    """Tail of a tool_result's text (content is a string or a list of text blocks)."""
+def result_content(block: dict) -> str:
+    """Text of a tool_result (content is a string or a list of text blocks)."""
     content = block.get("content")
     if isinstance(content, list):
         content = "\n".join(c.get("text", "") for c in content if isinstance(c, dict))
-    return content[-RESULT_TEXT_CHARS:] if isinstance(content, str) else ""
+    return content if isinstance(content, str) else ""
+
+
+def result_text(block: dict) -> str:
+    """Tail of a tool_result's text."""
+    return result_content(block)[-RESULT_TEXT_CHARS:]
+
+
+def launched(obj: dict, text: str) -> bool:
+    """True when a tool_result line says its call started background work (structured field or launch text)."""
+    tur = obj.get("toolUseResult")
+    return bool(isinstance(tur, dict) and (tur.get("backgroundTaskId") or tur.get("isAsync"))) or bool(
+        LAUNCH_RESULT.match(text))
+
+
+def background_ids(events: list[dict]) -> set:
+    """Tool calls that started background work: run_in_background, or a result saying it was launched."""
+    ids = set()
+    for ev in events:
+        if ev["kind"] == "turn":
+            ids.update(t["id"] for t in ev["tools"] if t["input"].get("run_in_background"))
+        elif ev["kind"] == "result":
+            ids.update(r["id"] for r in ev["results"] if r.get("launched"))
+    return ids
 
 
 def message_text(content) -> str:
@@ -115,6 +159,60 @@ def command_keys(command: str) -> list[str]:
         words.pop(0)
     keys = [" ".join(words[:n]) for n in (3, 2) if len(words) >= n]
     return list(dict.fromkeys(keys)) or words[:1]
+
+
+def is_quick_command(command: str) -> bool:
+    """True when every step of a shell command is a read-only utility (ls, grep, sed -n, git status/log/diff...).
+    Loop and if keywords are skipped; a command substitution may hide any work, so it is never quick."""
+    text = QUOTED.sub('""', HEREDOC.sub("", command or ""))
+    if "$(" in (command or "") or "`" in (command or ""):
+        return False
+    steps = [s.strip() for s in re.split(r"&&|\|\|?|;|\n", text) if s.strip()]
+    steps = [re.sub(r"^(?:(?:do|then|else|if|while|until|!|\{|\()\s+)+", "", s) for s in steps]
+    steps = [s for s in steps if not re.match(r"(?i)(cd|pushd|popd|set|export|source|for|done|fi|esac|\}|\))(\s|$)", s)]
+    return bool(steps) and all(quick_step(s) for s in steps)
+
+
+def is_instant(tool: dict) -> bool:
+    """A call that returns at once (Read, Edit, task list, messages, a read-only shell command): when it took
+    QUICK_TOOL_MAX_SECONDS or more, it waited."""
+    name = tool.get("name", "")
+    return name in INSTANT_TOOLS or (name == "Bash" and is_quick_command(str(tool.get("input", {}).get("command", ""))))
+
+
+def quick_step(step: str) -> bool:
+    words = [w for w in step.split() if not re.match(r"^\d?>|^<|^&>", w)]   # drop redirections
+    while words and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0]):         # VAR=value prefixes
+        words.pop(0)
+    if not words:
+        return True
+    name = words[0].strip("\"'").replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if name != "git":
+        return name in QUICK_COMMAND_WORDS
+    rest = words[1:]
+    while rest and rest[0].startswith("-"):                                  # git -C path / -c key=value
+        if rest.pop(0) in ("-C", "-c") and rest:
+            rest.pop(0)
+    return bool(rest) and rest[0].lower() in QUICK_GIT_SUBCOMMANDS
+
+
+def is_notice(obj: dict, text: str) -> bool:
+    """A system line that reports background work: a task's completion notice or a message from another
+    session or teammate (not a compaction summary, skill text or /command output)."""
+    origin = obj.get("origin")
+    kind = origin.get("kind") if isinstance(origin, dict) else origin
+    return (kind in SYSTEM_ORIGINS or obj.get("turnOrigin") in ("task_notification", "peer")
+            or text.lstrip().startswith(("<task-notification>", "Another Claude session sent a message"))
+            or bool(TEAMMATE_ID.search(text)))
+
+
+def permission_flags(obj: dict) -> tuple[bool, bool]:
+    """(prompted, denied) of a tool_result line: a person answered a permission prompt / the call never ran."""
+    decision = obj.get("permissionDecision")
+    if not isinstance(decision, dict):
+        return False, bool(obj.get("toolDenialKind"))
+    prompted = decision.get("source") in PROMPTED_SOURCES or "grantScope" in decision
+    return prompted, decision.get("decision") == "reject" or bool(obj.get("toolDenialKind"))
 
 
 def written_lines(tool: dict) -> int:
@@ -234,16 +332,21 @@ def to_events(lines: list[dict]) -> list[dict]:
             blocks = content if isinstance(content, list) else []
             results = [b for b in blocks if isinstance(b, dict) and b.get("type") == "tool_result"]
             if results:
+                prompted, denied = permission_flags(obj)
+                texts = [result_content(b) for b in results]
                 events.append({"kind": "result", "ts": ts,
                                "results": [{"id": b.get("tool_use_id"), "error": bool(b.get("is_error")),
-                                            "text": result_text(b)} for b in results]})
+                                            "text": text[-RESULT_TEXT_CHARS:], "prompted": prompted,
+                                            "denied": denied, "launched": launched(obj, text)}
+                                           for b, text in zip(results, texts)]})
             elif not obj.get("isMeta"):
                 text = message_text(content)
                 if is_system_line(obj, text):
                     notice = NOTICE_TOOL_ID.search(text)
                     teammate = TEAMMATE_ID.search(text)
                     events.append({"kind": "system", "ts": ts, "tool_use_id": notice.group(1) if notice else None,
-                                   "teammate": teammate.group(1) if teammate else None})
+                                   "teammate": teammate.group(1) if teammate else None,
+                                   "notice": is_notice(obj, text)})
                 else:
                     events.append({"kind": "human", "ts": ts, "text": text[:HUMAN_TEXT_CHARS]})
         prev_ts = ts
