@@ -99,8 +99,13 @@ EOF
 ## Output (in the user's language)
 
 Start with one plain line, built only from the `P10 | P50 | P90` line `estimate.py` printed (already self-corrected
-when it says so), rounded to whole minutes (seconds under 2 min), with its `Track record` line in brackets:
-**About <P50> min, likely <P10>–<P90> min** (<track record>; estimate id <id>). Then the details:
+when it says so), rounded to whole minutes (seconds under 2 min), with its `Track record` line in brackets. Always give
+BOTH the minutes and the clock time they mean: run `date +%H:%M` once just before you write the output (the start time),
+and add P50, P10 and P90 to it:
+**About <P50> min (done about <start+P50>), likely <P10>–<P90> min (<start+P10>–<start+P90>)** (from <start>; <track record>; estimate id <id>).
+Never give only clock times or only minutes. When the task has several parts the user asked about (several agents,
+several steps), give one row per part in a table with the columns: Part | About (min) | Range (min) | Done at | Range (clock),
+plus a total row, all counted from the same start time. Then the details:
 
 1. The task in one line, and its task type.
 2. The scenarios: name, weight, the unknown that drives it, and a compact tool-call list for the expected one. Name the 2–3 similar past requests you anchored on (date, real minutes, edits/commands).

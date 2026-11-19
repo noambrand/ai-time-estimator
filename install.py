@@ -22,7 +22,7 @@ RULE_START, RULE_END = "<!-- ai-time-estimator:start -->", "<!-- ai-time-estimat
 RULE = f"""{RULE_START}
 ## Time estimates
 - When the user asks how long a task will take, delegate to the `time-estimator` agent (or run `/estimate-here` when the work should continue in this session). Never give minutes from your own judgment.
-- Answer with its one-line result first ("About N min, likely A-B min"), then at most a few short lines on what drives the range.
+- Answer with its one-line result first, in your OWN reply (the user must never have to expand the agent's output): minutes AND clock time, each with its range - "About N min (done about HH:MM), likely A-B min (HH:MM-HH:MM), counted from HH:MM". Several parts (agents, steps): a table Part | About (min) | Range (min) | Done at | Range (clock), plus a total row. Then at most a few short lines on what drives the range. If time has passed since the estimate, also say how many minutes are left from now.
 - Scoring is automatic (Stop hook `autoscore.py`). Never ask the user to run estimator scripts.
 {RULE_END}
 """
