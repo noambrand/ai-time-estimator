@@ -89,6 +89,8 @@ Pick one way. The plugin and `install.py` do the same job, so having both would 
 3. A Stop hook (`autoscore.py`) compares every estimate with what really happened, once. The time you spend reading, answering or approving is left out, and so is the time the session sat idle waiting for background work. Work done by a background agent is measured on that agent's own transcript; work spread over several sessions is not scored unless you give an end.
 4. After 10 scored estimates, the ranges correct themselves from your results, and each answer carries its track record.
 
+**How the answer reads.** The first line gives the minutes and the clock time they mean, each with its range, counted from the start time: "About 40 min (done about 15:20), likely 25-70 min (15:05-15:50), counted from 14:40". When you ask about several parts (agents, steps), you get one table, Part | About (min) | Range (min) | Done at | Range (clock), plus a total row. The reply is written in Claude's own message, so you never have to expand the agent's output. `install.py` adds the same rule to your `CLAUDE.md`.
+
 The model never makes up minutes. It only counts operations, and the scripts do the arithmetic.
 
 You can also type `/estimate-here <task>` to estimate inside the current session; Claude then waits for your go.
