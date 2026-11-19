@@ -61,7 +61,7 @@ That's it. The first session measures your rates in the background (about a minu
 
 - **Claude Code before 2.1.275:** run `/plugin marketplace add noambrand/ai-time-estimator`, then `/plugin install ai-time-estimator@ai-time-estimator`.
 - **Let Claude do it:** paste *"Install https://github.com/noambrand/ai-time-estimator for me: clone it and run its install.py"* into Claude Code.
-- **Terminal, one line:** `git clone https://github.com/noambrand/ai-time-estimator.git && python3 ai-time-estimator/install.py` (on Windows `python`). No git? Download the [ZIP](https://github.com/noambrand/ai-time-estimator/archive/refs/heads/main.zip) and run `python install.py` in its folder.
+- **Terminal, one line:** `git clone https://github.com/noambrand/ai-time-estimator.git && python3 ai-time-estimator/install.py` (on Windows `python`). No git? Download `ai-time-estimator-<version>.zip` from the [latest release](https://github.com/noambrand/ai-time-estimator/releases/latest) (or the [ZIP of main](https://github.com/noambrand/ai-time-estimator/archive/refs/heads/main.zip)), unzip it and run `python install.py` in its folder.
 
 Pick one way. The plugin and `install.py` do the same job, so having both would score every task twice.
 
