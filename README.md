@@ -29,6 +29,7 @@
 <p align="center">
   <a href="#install-in-one-minute">Install</a> &bull;
   <a href="#what-an-answer-looks-like">What you get</a> &bull;
+  <a href="#who-needs-it-and-who-doesnt">Who needs it</a> &bull;
   <a href="#how-it-works">How it works</a> &bull;
   <a href="#how-accurate-is-it">Accuracy</a> &bull;
   <a href="#privacy">Privacy</a> &bull;
@@ -84,6 +85,30 @@ You ask how long something will take. Claude answers with the minutes, the clock
 | "This will take 2–3 days" for work done in 20 minutes | "About 7 min, likely 4–16 min" |
 | A guess based on how long a person would take | A count of the work, timed with your own speed |
 | Never finds out how wrong it was | Checks every estimate afterwards and learns from it |
+
+## Who needs it, and who doesn't
+
+A fair question: if Claude works in the background and tells you when it's done, why should you care how long it takes? Often you shouldn't. Here is when it helps, and when it doesn't.
+
+**When it's a real need**
+
+- **You promise a date.** A client or a manager asks when it will be ready. "About 40 minutes, likely 25–70" is a promise you can keep. Claude's own "2–3 days" is wrong by days.
+- **You decide now or later.** A 10-minute job fits before a meeting. A two-hour job waits for tonight.
+- **You choose what goes first.** When you know what each job costs in time, you know what to start now and what can wait.
+- **Something waits for it.** The next job needs this one's result, or a demo is at three.
+- **Your usage is limited.** A long job can use up your plan's limit before it ends. Its time is a rough sign of how much it will use.
+- **You want to know it's stuck.** If a job runs three times longer than its estimate, Claude is probably going in circles. That is the cheapest alarm there is.
+- **You want to know where your time really goes.** "Fix the slowest step next" only works if you measured the steps. Many people find that Claude's part is now the small one, and the real wait is on them: writing the request and checking the result. That is worth knowing too.
+
+**When it's mostly peace of mind**
+
+Sometimes you just want to know whether to wait five minutes or come back in an hour. That is not a business need, but it is not nothing: it decides whether you start something else, take a break, or stay. Knowing is calmer than guessing. Just be honest with yourself about which case you are in.
+
+**When you can skip it**
+
+If Claude works in the background and tells you when it's done, nothing waits on the result, nobody expects a date, and usage is not a concern, the exact minutes change nothing. Come back when you need to promise a date.
+
+The goal is not to make Claude faster. It is to know how long it takes.
 
 ## How it works
 
